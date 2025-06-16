@@ -39,10 +39,11 @@ jobs:
 
       - name: Setup SSH Key and Environment Vars
         run: |
-          echo "${{ secrets.SSH_KEY }}" > key_target.pem
-          chmod 600 key_target.pem
-          echo "${{ secrets.SSH_KEY }}" > key_jump.pem
-          chmod 600 key_jump.pem
+          echo "${{ secrets.SSH_KEY }}" > id_rsa_target
+          chmod 600 id_rsa_target
+
+          echo "${{ secrets.SSH_KEY }}" > id_rsa_jump
+          chmod 600 id_rsa_jump
 
           echo "host=${{ secrets.TN_STAGING_HOST }}" >> "$GITHUB_ENV"
           echo "jump_host=${{ secrets.JUMPHOST }}" >> "$GITHUB_ENV"
@@ -56,7 +57,10 @@ jobs:
           TARGET_DIR="${{ env.target_dir }}"
           BRANCH="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
-          SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i key_jump.pem -J $JUMP_HOST -i key_target.pem $HOST"
+
+          echo -e "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null\n" > ssh_config
+
+          SSH_COMMAND="ssh -F ssh_config -i id_rsa_jump -J $JUMP_HOST -i id_rsa_target $HOST"
 
           echo "Running action: $ACTION"
 
@@ -69,7 +73,7 @@ jobs:
               docker-compose down || true && \
               docker-compose up -d --build && \
               docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
-          
+
           elif [[ "$ACTION" == "rollback" ]]; then
             if [[ -z \"$ROLLBACK_TAG\" ]]; then
               echo '::error::Rollback tag is required'
