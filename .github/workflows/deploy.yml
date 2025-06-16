@@ -39,31 +39,11 @@ jobs:
 
       - name: Set up SSH keys
         run: |
-          # Save the private key with proper formatting
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
-          
-          # Configure SSH to skip host verification
           mkdir -p ~/.ssh
           echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
-
-      - name: Verify SSH key
-        run: |
-          echo "Private key contents:"
-          cat id_rsa
-          echo -e "\nPublic key derived from private key:"
-          ssh-keygen -y -f id_rsa || echo "Failed to derive public key"
-
-      - name: Test direct jump host connection
-        run: |
-          echo "Testing direct connection to jump host..."
-          ssh -i id_rsa sudeepr@4.240.49.92 "echo 'Jump host connection successful!'"
-
-      - name: Test full SSH connection
-        run: |
-          echo "Testing full SSH connection through jump host..."
-          ssh -i id_rsa -o ProxyCommand="ssh -W %h:%p -i id_rsa sudeepr@4.240.49.92" all-staging-user@10.3.0.9 "echo 'Full connection successful!'"
 
       - name: Execute deploy or rollback
         run: |
@@ -72,7 +52,8 @@ jobs:
           BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
 
-          SSH_COMMAND="ssh -i id_rsa -o ProxyCommand=\"ssh -W %h:%p -i id_rsa sudeepr@4.240.49.92\" all-staging-user@10.3.0.9"
+          # Define SSH command without quotes around ProxyCommand
+          SSH_COMMAND="ssh -i id_rsa -o ProxyCommand='ssh -W %h:%p -i id_rsa sudeepr@4.240.49.92' all-staging-user@10.3.0.9"
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server"
