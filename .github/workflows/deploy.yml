@@ -56,7 +56,7 @@ jobs:
           BRANCH_INPUT="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
           TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-          REPOSITORY_URL="git@github.com:your-organization/all-content-service.git" # <--- IMPORTANT: REPLACE WITH YOUR ACTUAL REPO SSH URL
+          REPO_URL="git@github.com:your-organization/all-content-service.git" # <--- IMPORTANT: Replace with your actual repository SSH URL
 
           # Default branch
           BRANCH="${BRANCH_INPUT:-lais-v2.0}"
@@ -74,21 +74,45 @@ jobs:
 
           echo "Running action: $ACTION"
 
+          # Define the base remote command structure
+          # This command will be passed to ssh
+          REMOTE_COMMAND=""
+
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server..."
-            # Check if .git directory exists and clone if not.
-            # Then navigate, pull, and run deploy.sh
-            "${SSH_COMMAND_ARRAY[@]}" "
-              if [ ! -d \"$TARGET_DIR/.git\" ]; then
-                echo \"Repository not found. Cloning into $TARGET_DIR...\"
-                git clone \"$REPOSITORY_URL\" \"$TARGET_DIR\"
-              fi; \
-              cd \"$TARGET_DIR\" && \
+            # Build the remote command string for deployment
+            # We first ensure the target directory exists.
+            # Then, attempt to pull/checkout. If it fails (not a git repo),
+            # clean it and clone. Finally, run docker-compose and deploy.sh.
+            REMOTE_COMMAND="
+              mkdir -p \"$TARGET_DIR\" && \
+              cd \"$TARGET_DIR\" || { echo \"Error: Could not navigate to $TARGET_DIR\"; exit 1; } && \
+              
+              if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+                echo \"Directory is not a Git repository. Cleaning and cloning...\"
+                # Clear the directory contents before cloning
+                rm -rf \"$TARGET_DIR\"/* \"$TARGET_DIR\"/.* 2>/dev/null || true # Remove all files/dirs, ignore errors for non-existent dotfiles
+                git clone \"$REPO_URL\" . || { echo \"Error: Failed to clone repository.\"; exit 1; }
+              fi && \
+              
+              echo \"Fetching all latest changes...\" && \
               git fetch --all && \
+              echo \"Checking out branch: $BRANCH...\" && \
               git checkout \"$BRANCH\" && \
+              echo \"Pulling latest changes for $BRANCH...\" && \
               git pull origin \"$BRANCH\" && \
-              chmod +x deploy.sh && \
-              ./deploy.sh" # <--- IMPORTANT: Execute your deploy.sh script here
+              
+              echo \"Running deploy.sh...\" && \
+              if [ -f \"./deploy.sh\" ]; then
+                bash ./deploy.sh \"$TARGET_DIR\" \"$BRANCH\" \"$ACTION\"
+              else
+                echo \"Error: deploy.sh not found in $TARGET_DIR. Running basic docker commands.\"
+                # Fallback docker commands if deploy.sh is missing
+                docker-compose down || true && \
+                docker-compose up -d --build && \
+                docker image prune -f || true
+              fi
+            "
 
           elif [[ "$ACTION" == "rollback" ]]; then
             if [[ -z "$ROLLBACK_TAG" ]]; then
@@ -96,18 +120,35 @@ jobs:
               exit 1
             fi
             echo "Rolling back to tag $ROLLBACK_TAG on target server..."
-            # For rollback, we still need to ensure the repo is there and run appropriate commands
-            "${SSH_COMMAND_ARRAY[@]}" "
-              if [ ! -d \"$TARGET_DIR/.git\" ]; then
-                echo \"Repository not found for rollback. Please ensure it's cloned.\"
-                exit 1 # Or add cloning logic here too if needed for rollbacks on fresh systems
-              fi; \
-              cd \"$TARGET_DIR\" && \
+            # Build the remote command string for rollback
+            REMOTE_COMMAND="
+              cd \"$TARGET_DIR\" || { echo \"Error: Could not navigate to $TARGET_DIR\"; exit 1; } && \
+              
+              if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+                echo \"Error: Directory is not a Git repository for rollback. Cannot proceed.\"
+                exit 1
+              fi && \
+              
+              echo \"Fetching all latest changes and tags...\" && \
               git fetch --all --tags && \
+              echo \"Checking out tag: $ROLLBACK_TAG...\" && \
               git checkout \"tags/$ROLLBACK_TAG\" && \
-              chmod +x deploy.sh && \
-              ./deploy.sh" # <--- IMPORTANT: You might need to adapt deploy.sh for rollback scenarios, or have a separate rollback script.
+              
+              echo \"Running deploy.sh after rollback...\" && \
+              if [ -f \"./deploy.sh\" ]; then
+                bash ./deploy.sh \"$TARGET_DIR\" \"$ROLLBACK_TAG\" \"$ACTION\"
+              else
+                echo \"Error: deploy.sh not found in $TARGET_DIR. Running basic docker commands.\"
+                # Fallback docker commands if deploy.sh is missing
+                docker-compose down || true && \
+                docker-compose up -d --build && \
+                docker image prune -f || true
+              fi
+            "
           else
             echo "::error::Invalid action: $ACTION"
             exit 1
           fi
+
+          # Execute the constructed remote command
+          "${SSH_COMMAND_ARRAY[@]}" "$REMOTE_COMMAND"
