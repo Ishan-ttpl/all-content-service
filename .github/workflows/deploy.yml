@@ -60,17 +60,23 @@ jobs:
           # Default branch
           BRANCH="${BRANCH_INPUT:-lais-v2.0}"
 
-          # Define the SSH ProxyCommand separately or escape quotes carefully
-          # Method 1: Using a separate variable for ProxyCommand part
-          PROXY_CMD="ssh -i id_rsa -W %h:%p sudeepr@4.240.49.92"
-          SSH_COMMON_ARGS="-o ProxyCommand=\"$PROXY_CMD\" -i id_rsa"
-          TARGET_USER_HOST="all-staging-user@10.3.0.9"
+          # Define the SSH ProxyCommand value directly
+          PROXY_CMD_VALUE="ssh -i id_rsa -W %h:%p sudeepr@4.240.49.92"
+
+          # Construct the SSH command as an array to handle complex arguments robustly
+          SSH_COMMAND_ARRAY=(
+            ssh
+            -o "ProxyCommand=$PROXY_CMD_VALUE"
+            -i id_rsa
+            all-staging-user@10.3.0.9
+          )
 
           echo "Running action: $ACTION"
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server..."
-            ssh $SSH_COMMON_ARGS $TARGET_USER_HOST "cd \"$TARGET_DIR\" && \
+            # Execute the SSH command using the array
+            "${SSH_COMMAND_ARRAY[@]}" "cd \"$TARGET_DIR\" && \
               git fetch --all && \
               git checkout \"$BRANCH\" && \
               git pull origin \"$BRANCH\" && \
@@ -84,7 +90,8 @@ jobs:
               exit 1
             fi
             echo "Rolling back to tag $ROLLBACK_TAG on target server..."
-            ssh $SSH_COMMON_ARGS $TARGET_USER_HOST "cd \"$TARGET_DIR\" && \
+            # Execute the SSH command using the array
+            "${SSH_COMMAND_ARRAY[@]}" "cd \"$TARGET_DIR\" && \
               git fetch --all --tags && \
               git checkout \"tags/$ROLLBACK_TAG\" && \
               docker-compose down || true && \
