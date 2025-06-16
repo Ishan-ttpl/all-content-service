@@ -39,39 +39,15 @@ jobs:
 
       - name: Set up SSH keys
         run: |
-          # Save the private key
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
-          
-          # Add key to SSH agent
           eval $(ssh-agent)
           ssh-add id_rsa
 
-      - name: Configure SSH
+      - name: Test direct SSH connection
         run: |
-          # Create SSH config
-          cat > ssh_config <<EOF
-          Host jump
-            HostName ${{ secrets.JUMPHOST_IP }}
-            User ${{ secrets.JUMPHOST_USER }}
-            IdentityFile id_rsa
-            StrictHostKeyChecking no
-            
-          Host target
-            HostName ${{ secrets.TARGET_HOST_IP }}
-            User ${{ secrets.TARGET_USER }}
-            IdentityFile id_rsa
-            ProxyJump jump
-            StrictHostKeyChecking no
-          EOF
-
-      - name: Test SSH connection
-        run: |
-          echo "Testing connection to jump host..."
-          ssh -F ssh_config jump "echo 'Jump host connection successful'"
-          
-          echo "Testing connection to target host..."
-          ssh -F ssh_config target "echo 'Target host connection successful'"
+          echo "Testing direct SSH connection..."
+          ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "echo 'Connection successful!'"
 
       - name: Execute deploy or rollback
         run: |
@@ -80,11 +56,11 @@ jobs:
           BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
 
-          echo "Running action: $ACTION"
+          SSH_COMMAND="ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9"
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server"
-            ssh -F ssh_config target "cd $TARGET_DIR && \
+            $SSH_COMMAND "cd $TARGET_DIR && \
               git fetch --all && \
               git checkout $BRANCH && \
               git pull origin $BRANCH && \
@@ -98,7 +74,7 @@ jobs:
               exit 1
             fi
             echo "Rolling back to tag $ROLLBACK_TAG on target server"
-            ssh -F ssh_config target "cd $TARGET_DIR && \
+            $SSH_COMMAND "cd $TARGET_DIR && \
               git fetch --all --tags && \
               git checkout tags/$ROLLBACK_TAG && \
               docker-compose down || true && \
