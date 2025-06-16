@@ -1,9 +1,6 @@
 name: Deploy or Rollback All-Content-Service
 
 on:
-  push:
-    tags:
-      - 'deploy-tn-staging-*'
   workflow_dispatch:
     inputs:
       action:
@@ -22,61 +19,85 @@ on:
         options:
           - tn-staging
       branch:
-        description: 'Branch to deploy (only for "deploy" action)'
+        description: 'Branch to deploy (only for deploy)'
         required: false
         default: 'lais-v2.0'
       rollback_tag:
-        description: 'Tag to rollback to (only for "rollback" action, e.g., deploy-tn-staging-v1.0.0)'
+        description: 'Tag to rollback to (only for rollback)'
         required: false
 
 jobs:
   deploy-or-rollback:
     runs-on: ubuntu-latest
     environment: tn-staging
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        ref: ${{ github.event.inputs.branch || 'lais-v2.0' }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Set SSH Key and Target Host
-      run: |
-        echo "${{ secrets.SSH_KEY }}" > key.pem
-        echo "${{ secrets.SSH_KEY }}" > jump_key.pem
-        chmod 600 key.pem jump_key.pem
-        echo "host=${{ secrets.TN_STAGING_HOST }}" >> "$GITHUB_ENV"
-        echo "target_dir=/home/all-staging-user/all-services/all-content-deploy" >> "$GITHUB_ENV"
-        echo "jump_host=${{ secrets.JUMPHOST }}" >> "$GITHUB_ENV"
+      - name: Set up SSH keys
+        run: |
+          # Save the private key with proper formatting
+          echo "${{ secrets.SSH_KEY }}" > id_rsa
+          chmod 600 id_rsa
+          
+          # Configure SSH to skip host verification
+          mkdir -p ~/.ssh
+          echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
+          chmod 600 ~/.ssh/config
 
-    - name: Perform Deploy or Rollback
-      run: |
-        ACTION="${{ github.event.inputs.action || 'deploy' }}"
-        HOST="${{ env.host }}"
-        TARGET_DIR="${{ env.target_dir }}"
-        JUMP_HOST="${{ env.jump_host }}"
-        
-        SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i jump_key.pem -J $JUMP_HOST -i key.pem $HOST"
+      - name: Verify SSH key
+        run: |
+          echo "Private key contents:"
+          cat id_rsa
+          echo -e "\nPublic key derived from private key:"
+          ssh-keygen -y -f id_rsa || echo "Failed to derive public key"
 
-        if [[ "$ACTION" == "deploy" ]]; then
+      - name: Test direct jump host connection
+        run: |
+          echo "Testing direct connection to jump host..."
+          ssh -i id_rsa sudeepr@4.240.49.92 "echo 'Jump host connection successful!'"
+
+      - name: Test full SSH connection
+        run: |
+          echo "Testing full SSH connection through jump host..."
+          ssh -i id_rsa -o ProxyCommand="ssh -W %h:%p -i id_rsa sudeepr@4.240.49.92" all-staging-user@10.3.0.9 "echo 'Full connection successful!'"
+
+      - name: Execute deploy or rollback
+        run: |
+          ACTION="${{ github.event.inputs.action }}"
+          TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
           BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
-          echo "Initiating deployment to $HOST from branch: $BRANCH"
-          $SSH_COMMAND "cd $TARGET_DIR && \
-                        chmod +x deploy.sh && \
-                        ./deploy.sh $TARGET_DIR $BRANCH deploy"
-        elif [[ "$ACTION" == "rollback" ]]; then
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
-          if [[ -z "$ROLLBACK_TAG" ]]; then
-            echo "::error::Rollback tag is required for rollback action."
+
+          SSH_COMMAND="ssh -i id_rsa -o ProxyCommand=\"ssh -W %h:%p -i id_rsa sudeepr@4.240.49.92\" all-staging-user@10.3.0.9"
+
+          if [[ "$ACTION" == "deploy" ]]; then
+            echo "Deploying branch $BRANCH to target server"
+            $SSH_COMMAND "cd $TARGET_DIR && \
+              git fetch --all && \
+              git checkout $BRANCH && \
+              git pull origin $BRANCH && \
+              docker-compose down || true && \
+              docker-compose up -d --build && \
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
+
+          elif [[ "$ACTION" == "rollback" ]]; then
+            if [[ -z "$ROLLBACK_TAG" ]]; then
+              echo '::error::Rollback tag is required'
+              exit 1
+            fi
+            echo "Rolling back to tag $ROLLBACK_TAG on target server"
+            $SSH_COMMAND "cd $TARGET_DIR && \
+              git fetch --all --tags && \
+              git checkout tags/$ROLLBACK_TAG && \
+              docker-compose down || true && \
+              docker-compose up -d --build && \
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
+
+          else
+            echo "::error::Invalid action: $ACTION"
             exit 1
           fi
-          echo "Initiating rollback to tag: $ROLLBACK_TAG on $HOST"
-          $SSH_COMMAND "cd $TARGET_DIR && \
-                        chmod +x deploy.sh && \
-                        ./deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback"
-        else
-          echo "::error::Invalid action specified: $ACTION"
-          exit 1
-        fi
