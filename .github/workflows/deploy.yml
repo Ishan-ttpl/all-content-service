@@ -37,12 +37,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up SSH key # This step is mostly redundant now for Git operations, but kept for SSH to jump host
+      - name: Set up SSH key # Only needed for SSH connection to jump host/target, not for Git ops now
         run: |
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
-          eval "$(ssh-agent -s)" # Start SSH agent
-          ssh-add id_rsa        # Add key to agent
+          eval "$(ssh-agent -s)"
+          ssh-add id_rsa
 
           mkdir -p ~/.ssh
           echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
@@ -56,13 +56,7 @@ jobs:
           BRANCH_INPUT="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
           TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-          # IMPORTANT: Use the HTTPS URL for your GitHub repository
-          # Inject the PAT for authentication directly into the URL
-          # Using 'x-oauth-basic' as the username is common for PATs
-          # Or you can use any dummy username, the PAT is the password.
-          # For public repos, you might not even need the token in the URL for cloning.
-          # For private repos, it's essential.
-          # Make sure to replace YOUR_GITHUB_USERNAME with your actual GitHub username.
+          # Use the HTTPS URL with PAT for authentication
           REPO_URL="https://Ishan-ttpl:${{ secrets.GH_PAT }}@github.com/Ishan-ttpl/all-content-service.git"
 
           # Default branch
@@ -71,8 +65,7 @@ jobs:
           # Define the SSH ProxyCommand value directly
           PROXY_CMD_VALUE="ssh -i id_rsa -W %h:%p sudeepr@4.240.49.92"
 
-          # Construct the SSH command as an array to handle complex arguments robustly
-          # We no longer need -A for agent forwarding if Git operations are HTTPS
+          # Construct the SSH command as an array for the remote connection
           SSH_COMMAND_ARRAY=(
             ssh
             -o "ProxyCommand=$PROXY_CMD_VALUE"
@@ -88,24 +81,30 @@ jobs:
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server..."
             REMOTE_COMMAND="
-              mkdir -p \"$TARGET_DIR\" && \
-              cd \"$TARGET_DIR\" || { echo \"Error: Could not navigate to $TARGET_DIR\"; exit 1; } && \
+              # Ensure the parent directory exists
+              mkdir -p \"$(dirname "$TARGET_DIR")\" && \
               
-              # Check if it's a Git repository
-              if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-                echo \"Directory is a Git repository. Fetching and pulling...\"
+              # Check if the TARGET_DIR exists AND is a Git repository
+              if [ -d \"$TARGET_DIR\" ] && git -C \"$TARGET_DIR\" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+                echo \"Directory $TARGET_DIR is an existing Git repository. Updating...\"
+                cd \"$TARGET_DIR\" && \
                 git fetch --all && \
                 git checkout \"$BRANCH\" && \
                 git pull origin \"$BRANCH\"
-              else
-                echo \"Directory is NOT a Git repository. Cleaning and cloning...\"
+              elif [ -d \"$TARGET_DIR\" ]; then
+                echo \"Directory $TARGET_DIR exists but is NOT a Git repository. Cleaning and cloning...\"
+                # Remove existing content if it's not a valid repo
                 rm -rf \"$TARGET_DIR\"/* \"$TARGET_DIR\"/.* 2>/dev/null || true
-                git clone \"$REPO_URL\" . || { echo \"Error: Failed to clone repository ($REPO_URL). Check URL and PAT access.\"; exit 1; }
-                # After cloning, ensure we are on the correct branch
-                cd \"$TARGET_DIR\" && git checkout \"$BRANCH\"
+                git clone \"$REPO_URL\" \"$TARGET_DIR\" || { echo \"Error: Failed to clone repository ($REPO_URL). Check URL and PAT access.\"; exit 1; }
+                cd \"$TARGET_DIR\" # cd into the newly cloned directory
+              else
+                echo \"Directory $TARGET_DIR does not exist. Cloning fresh...\"
+                git clone \"$REPO_URL\" \"$TARGET_DIR\" || { echo \"Error: Failed to clone repository ($REPO_URL). Check URL and PAT access.\"; exit 1; }
+                cd \"$TARGET_DIR\" # cd into the newly cloned directory
               fi && \
               
-              echo \"Running deploy.sh...\" && \
+              # Execute deploy.sh (or fallback docker commands)
+              echo \"Executing deploy.sh on the remote server...\" && \
               if [ -f \"./deploy.sh\" ]; then
                 bash ./deploy.sh \"$TARGET_DIR\" \"$BRANCH\" \"$ACTION\"
               else
@@ -123,18 +122,19 @@ jobs:
             fi
             echo "Rolling back to tag $ROLLBACK_TAG on target server..."
             REMOTE_COMMAND="
-              cd \"$TARGET_DIR\" || { echo \"Error: Could not navigate to $TARGET_DIR\"; exit 1; } && \
-              
-              if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-                echo \"Error: Directory is not a Git repository for rollback. Cannot proceed.\"
+              # Ensure it's a Git repository before attempting rollback
+              if [ -d \"$TARGET_DIR\" ] && git -C \"$TARGET_DIR\" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+                echo \"Directory $TARGET_DIR is an existing Git repository. Rolling back...\"
+                cd \"$TARGET_DIR\" && \
+                git fetch --all --tags && \
+                git checkout \"tags/$ROLLBACK_TAG\"
+              else
+                echo \"Error: Target directory $TARGET_DIR is not a Git repository. Cannot perform rollback.\"
                 exit 1
               fi && \
               
-              echo \"Fetching all latest changes and tags...\" && \
-              git fetch --all && \ # git fetch --all --tags is fine too, but git fetch --all usually gets tags too.
-              git checkout \"tags/$ROLLBACK_TAG\" && \
-              
-              echo \"Running deploy.sh after rollback...\" && \
+              # Execute deploy.sh (or fallback docker commands) after rollback
+              echo \"Executing deploy.sh after rollback on the remote server...\" && \
               if [ -f \"./deploy.sh\" ]; then
                 bash ./deploy.sh \"$TARGET_DIR\" \"$ROLLBACK_TAG\" \"$ACTION\"
               else
