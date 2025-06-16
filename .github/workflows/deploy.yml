@@ -52,20 +52,16 @@ jobs:
           BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
 
-          # Create a temporary script for the remote commands
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server"
-            REMOTE_SCRIPT=$(cat <<'EOF'
-              cd "$1" && \
+            REMOTE_SCRIPT="cd '$TARGET_DIR' && \
               git fetch --all && \
-              git checkout "$2" && \
-              git pull origin "$2" && \
+              git checkout '$BRANCH' && \
+              git pull origin '$BRANCH' && \
               docker-compose down || true && \
               docker-compose up -d --build && \
-              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true
-            EOF
-            )
-            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_SCRIPT" "$TARGET_DIR" "$BRANCH"
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
+            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_SCRIPT"
 
           elif [[ "$ACTION" == "rollback" ]]; then
             if [[ -z "$ROLLBACK_TAG" ]]; then
@@ -73,16 +69,13 @@ jobs:
               exit 1
             fi
             echo "Rolling back to tag $ROLLBACK_TAG on target server"
-            REMOTE_SCRIPT=$(cat <<'EOF'
-              cd "$1" && \
+            REMOTE_SCRIPT="cd '$TARGET_DIR' && \
               git fetch --all --tags && \
-              git checkout "tags/$2" && \
+              git checkout 'tags/$ROLLBACK_TAG' && \
               docker-compose down || true && \
               docker-compose up -d --build && \
-              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true
-            EOF
-            )
-            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_SCRIPT" "$TARGET_DIR" "$ROLLBACK_TAG"
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
+            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_SCRIPT"
 
           else
             echo "::error::Invalid action: $ACTION"
