@@ -52,18 +52,20 @@ jobs:
           BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
 
-          # Define SSH command without quotes around ProxyCommand
-          SSH_COMMAND="ssh -i id_rsa -o ProxyCommand='ssh -W %h:%p -i id_rsa sudeepr@4.240.49.92' all-staging-user@10.3.0.9"
-
+          # Create a temporary script for the remote commands
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server"
-            $SSH_COMMAND "cd $TARGET_DIR && \
+            REMOTE_SCRIPT=$(cat <<'EOF'
+              cd "$1" && \
               git fetch --all && \
-              git checkout $BRANCH && \
-              git pull origin $BRANCH && \
+              git checkout "$2" && \
+              git pull origin "$2" && \
               docker-compose down || true && \
               docker-compose up -d --build && \
-              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true
+            EOF
+            )
+            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_SCRIPT" "$TARGET_DIR" "$BRANCH"
 
           elif [[ "$ACTION" == "rollback" ]]; then
             if [[ -z "$ROLLBACK_TAG" ]]; then
@@ -71,12 +73,16 @@ jobs:
               exit 1
             fi
             echo "Rolling back to tag $ROLLBACK_TAG on target server"
-            $SSH_COMMAND "cd $TARGET_DIR && \
+            REMOTE_SCRIPT=$(cat <<'EOF'
+              cd "$1" && \
               git fetch --all --tags && \
-              git checkout tags/$ROLLBACK_TAG && \
+              git checkout "tags/$2" && \
               docker-compose down || true && \
               docker-compose up -d --build && \
-              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true
+            EOF
+            )
+            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_SCRIPT" "$TARGET_DIR" "$ROLLBACK_TAG"
 
           else
             echo "::error::Invalid action: $ACTION"
