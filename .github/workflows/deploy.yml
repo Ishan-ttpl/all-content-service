@@ -39,19 +39,30 @@ jobs:
 
       - name: Set up SSH keys
         run: |
-          # Save the private key in the working directory
-          echo "${{ secrets.SSH_KEY }}" > ./id_rsa
-          chmod 600 ./id_rsa
+          # Save the private key with correct formatting
+          echo "${{ secrets.SSH_KEY }}" > id_rsa
+          chmod 600 id_rsa
+          
+          # Add key to SSH agent
+          eval $(ssh-agent)
+          ssh-add id_rsa
           
           # Configure SSH to skip host verification
           mkdir -p ~/.ssh
           echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
+      - name: Verify SSH key
+        run: |
+          echo "Private key contents:"
+          cat id_rsa
+          echo -e "\nPublic key derived from private key:"
+          ssh-keygen -y -f id_rsa
+
       - name: Test SSH connection
         run: |
           echo "Testing SSH connection..."
-          ssh -i ./id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "echo 'SSH connection successful!'"
+          ssh -vvv -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "echo 'SSH connection successful!'"
 
       - name: Execute deploy or rollback
         run: |
@@ -60,7 +71,7 @@ jobs:
           BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
 
-          SSH_COMMAND="ssh -i ./id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9"
+          SSH_COMMAND="ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9"
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server"
