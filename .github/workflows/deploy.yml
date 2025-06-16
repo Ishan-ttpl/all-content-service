@@ -32,7 +32,7 @@ jobs:
     environment: tn-staging
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -41,47 +41,53 @@ jobs:
         run: |
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
+          eval "$(ssh-agent -s)"
+          ssh-add id_rsa
           mkdir -p ~/.ssh
-          echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
-          chmod 600 ~/.ssh/config
-          eval $(ssh-agent)
-          ssh-add id_rsa  # Add key to agent
-          ssh-add -l      # DEBUG: Verify key was added
+          echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n" > ~/.ssh/config
+        shell: bash
 
       - name: Execute deploy or rollback
         run: |
+          set -e
+
           ACTION="${{ github.event.inputs.action }}"
-          TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-          BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
+          BRANCH_INPUT="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+          TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
 
-          # Define SSH command without quotes around ProxyCommand
-          SSH_COMMAND="ssh -o ProxyCommand='ssh -W %h:%p sudeepr@4.240.49.92' all-staging-user@10.3.0.9"
+          # Use default if BRANCH is not set
+          BRANCH="${BRANCH_INPUT:-lais-v2.0}"
 
-          if [[ "$ACTION" == "deploy" ]]; then
-            echo "Deploying branch $BRANCH to target server"
-            $SSH_COMMAND "cd $TARGET_DIR && \
+          # SSH command via jump host
+          SSH_COMMAND="ssh -o ProxyCommand='ssh -i id_rsa -W %h:%p sudeepr@4.240.49.92' -i id_rsa all-staging-user@10.3.0.9"
+
+          echo "Running action: $ACTION"
+
+          if [[ \"$ACTION\" == \"deploy\" ]]; then
+            echo "Deploying branch $BRANCH to target server..."
+            $SSH_COMMAND "cd \"$TARGET_DIR\" && \
               git fetch --all && \
-              git checkout $BRANCH && \
-              git pull origin $BRANCH && \
+              git checkout \"$BRANCH\" && \
+              git pull origin \"$BRANCH\" && \
               docker-compose down || true && \
               docker-compose up -d --build && \
-              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
+              docker image prune -f || true"
 
-          elif [[ "$ACTION" == "rollback" ]]; then
-            if [[ -z "$ROLLBACK_TAG" ]]; then
+          elif [[ \"$ACTION\" == \"rollback\" ]]; then
+            if [[ -z \"$ROLLBACK_TAG\" ]]; then
               echo '::error::Rollback tag is required'
               exit 1
             fi
-            echo "Rolling back to tag $ROLLBACK_TAG on target server"
-            $SSH_COMMAND "cd $TARGET_DIR && \
+            echo "Rolling back to tag $ROLLBACK_TAG on target server..."
+            $SSH_COMMAND "cd \"$TARGET_DIR\" && \
               git fetch --all --tags && \
-              git checkout tags/$ROLLBACK_TAG && \
+              git checkout \"tags/$ROLLBACK_TAG\" && \
               docker-compose down || true && \
               docker-compose up -d --build && \
-              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
-
+              docker image prune -f || true"
           else
             echo "::error::Invalid action: $ACTION"
             exit 1
           fi
+        shell: bash
