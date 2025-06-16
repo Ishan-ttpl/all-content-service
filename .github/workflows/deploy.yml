@@ -18,6 +18,7 @@ on:
         type: choice
         options:
           - tn-staging
+          - tn-production  # Example additional environment
       branch:
         description: 'Branch to deploy (only for deploy)'
         required: false
@@ -29,7 +30,7 @@ on:
 jobs:
   deploy-or-rollback:
     runs-on: ubuntu-latest
-    environment: tn-staging
+    environment: ${{ github.event.inputs.environment }}  # Use input environment
 
     steps:
       - name: Checkout code
@@ -39,30 +40,33 @@ jobs:
 
       - name: Set up SSH keys
         run: |
-          # Save the private key with proper formatting
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
-          
-          # Add key to SSH agent
           eval $(ssh-agent)
           ssh-add id_rsa
-          
-          # Configure SSH to skip host verification
           mkdir -p ~/.ssh
           echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-      - name: Verify full connection
+      - name: Verify key authentication on jump host
         run: |
-          echo "Testing full connection through jump host..."
-          ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "echo 'Full connection successful!'"
+          ssh -T sudeepr@4.240.49.92 "echo 'Jump host authentication successful!'"
+
+      - name: Verify key authentication on target host
+        run: |
+          ssh -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "echo 'Target host authentication successful!'"
 
       - name: Execute deploy or rollback
         run: |
           ACTION="${{ github.event.inputs.action }}"
           TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-          BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
+          BRANCH="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+
+          # Fallback to default branch if not provided for deploy
+          if [ -z "$BRANCH" ] && [ "$ACTION" == "deploy" ]; then
+            BRANCH="lais-v2.0"
+          fi
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server"
@@ -74,7 +78,7 @@ jobs:
               docker-compose up -d --build && \
               docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
             
-            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_CMD"
+            ssh -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_CMD"
 
           elif [[ "$ACTION" == "rollback" ]]; then
             if [[ -z "$ROLLBACK_TAG" ]]; then
@@ -89,7 +93,7 @@ jobs:
               docker-compose up -d --build && \
               docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
             
-            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_CMD"
+            ssh -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_CMD"
 
           else
             echo "::error::Invalid action: $ACTION"
