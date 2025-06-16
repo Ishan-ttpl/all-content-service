@@ -39,35 +39,52 @@ jobs:
 
       - name: Set up SSH keys
         run: |
+          # Save the private key
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
+          
+          # Add key to SSH agent
+          eval $(ssh-agent)
+          ssh-add id_rsa
 
-      - name: Write SSH config
+      - name: Configure SSH
         run: |
-          echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ssh_config
+          # Create SSH config
+          cat > ssh_config <<EOF
+          Host jump
+            HostName ${{ secrets.JUMPHOST_IP }}
+            User ${{ secrets.JUMPHOST_USER }}
+            IdentityFile id_rsa
+            StrictHostKeyChecking no
+            
+          Host target
+            HostName ${{ secrets.TARGET_HOST_IP }}
+            User ${{ secrets.TARGET_USER }}
+            IdentityFile id_rsa
+            ProxyJump jump
+            StrictHostKeyChecking no
+          EOF
 
-      - name: Set environment variables
+      - name: Test SSH connection
         run: |
-          echo "host=${{ secrets.TN_STAGING_HOST }}" >> "$GITHUB_ENV"
-          echo "jump_host=${{ secrets.JUMPHOST }}" >> "$GITHUB_ENV"
-          echo "target_dir=/home/all-staging-user/all-services/all-content-deploy" >> "$GITHUB_ENV"
+          echo "Testing connection to jump host..."
+          ssh -F ssh_config jump "echo 'Jump host connection successful'"
+          
+          echo "Testing connection to target host..."
+          ssh -F ssh_config target "echo 'Target host connection successful'"
 
       - name: Execute deploy or rollback
         run: |
           ACTION="${{ github.event.inputs.action }}"
-          HOST="${{ env.host }}"
-          JUMP_HOST="${{ env.jump_host }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          BRANCH="${{ github.event.inputs.branch }}"
+          TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
+          BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
 
           echo "Running action: $ACTION"
 
-          SSH_COMMAND="ssh -F ssh_config -J $JUMP_HOST -i id_rsa $HOST"
-
           if [[ "$ACTION" == "deploy" ]]; then
-            echo "Deploying branch $BRANCH to $HOST"
-            $SSH_COMMAND "cd $TARGET_DIR && \
+            echo "Deploying branch $BRANCH to target server"
+            ssh -F ssh_config target "cd $TARGET_DIR && \
               git fetch --all && \
               git checkout $BRANCH && \
               git pull origin $BRANCH && \
@@ -76,12 +93,12 @@ jobs:
               docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
 
           elif [[ "$ACTION" == "rollback" ]]; then
-            if [[ -z \"$ROLLBACK_TAG\" ]]; then
+            if [[ -z "$ROLLBACK_TAG" ]]; then
               echo '::error::Rollback tag is required'
               exit 1
             fi
-            echo "Rolling back to tag $ROLLBACK_TAG on $HOST"
-            $SSH_COMMAND "cd $TARGET_DIR && \
+            echo "Rolling back to tag $ROLLBACK_TAG on target server"
+            ssh -F ssh_config target "cd $TARGET_DIR && \
               git fetch --all --tags && \
               git checkout tags/$ROLLBACK_TAG && \
               docker-compose down || true && \
