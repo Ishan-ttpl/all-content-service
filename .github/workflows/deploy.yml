@@ -37,66 +37,61 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up SSH keys
+      - name: Set up SSH key and config
         run: |
-          # Save the private key with proper formatting
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
-          
-          # Add key to SSH agent
-          eval $(ssh-agent)
-          ssh-add id_rsa
-          
-          # Configure SSH to skip host verification
+
           mkdir -p ~/.ssh
           echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-      - name: Verify key authentication on jump host
+          eval "$(ssh-agent -s)"
+          ssh-add id_rsa
+
+      - name: Test SSH to jump and target hosts
         run: |
           echo "Testing jump host authentication..."
-          ssh -T -i id_rsa sudeepr@4.240.49.92 "echo 'Jump host authentication successful!'"
-
-      - name: Verify key authentication on target host
-        run: |
-          echo "Testing target host authentication..."
-          ssh -T -i id_rsa all-staging-user@10.3.0.9 "echo 'Target host authentication successful!'"
+          ssh -o ProxyJump=sudeepr@4.240.49.92 -i id_rsa all-staging-user@10.3.0.9 "echo 'SSH to target successful through jump host'"
 
       - name: Execute deploy or rollback
         run: |
           ACTION="${{ github.event.inputs.action }}"
-          TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-          BRANCH="${{ github.event.inputs.branch || 'lais-v2.0' }}"
+          BRANCH_INPUT="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+          TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
 
-          if [[ "$ACTION" == "deploy" ]]; then
-            echo "Deploying branch $BRANCH to target server"
-            REMOTE_CMD="cd '$TARGET_DIR' && \
-              git fetch --all && \
-              git checkout '$BRANCH' && \
-              git pull origin '$BRANCH' && \
+          BRANCH="${BRANCH_INPUT:-lais-v2.0}"
+
+          echo "Running action: $ACTION"
+          echo "Using branch: $BRANCH"
+          echo "Using rollback tag: $ROLLBACK_TAG"
+
+          REMOTE_CMD="cd $TARGET_DIR && "
+
+          if [[ \"$ACTION\" == \"deploy\" ]]; then
+            REMOTE_CMD+=\"git fetch --all && \
+              git checkout $BRANCH && \
+              git pull origin $BRANCH && \
               docker-compose down || true && \
               docker-compose up -d --build && \
-              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
-            
-            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_CMD"
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true\"
 
-          elif [[ "$ACTION" == "rollback" ]]; then
-            if [[ -z "$ROLLBACK_TAG" ]]; then
+          elif [[ \"$ACTION\" == \"rollback\" ]]; then
+            if [[ -z \"$ROLLBACK_TAG\" ]]; then
               echo '::error::Rollback tag is required'
               exit 1
             fi
-            echo "Rolling back to tag $ROLLBACK_TAG on target server"
-            REMOTE_CMD="cd '$TARGET_DIR' && \
-              git fetch --all --tags && \
-              git checkout 'tags/$ROLLBACK_TAG' && \
+            REMOTE_CMD+=\"git fetch --all --tags && \
+              git checkout tags/$ROLLBACK_TAG && \
               docker-compose down || true && \
               docker-compose up -d --build && \
-              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
-            
-            ssh -i id_rsa -J sudeepr@4.240.49.92 all-staging-user@10.3.0.9 "$REMOTE_CMD"
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true\"
 
           else
             echo "::error::Invalid action: $ACTION"
             exit 1
           fi
+
+          echo "Running remote command via jump host..."
+          ssh -J sudeepr@4.240.49.92 -i id_rsa all-staging-user@10.3.0.9 "$REMOTE_CMD"
