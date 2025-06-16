@@ -37,7 +37,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up SSH key
+      - name: Set up SSH key # This step is mostly redundant now for Git operations, but kept for SSH to jump host
         run: |
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
@@ -56,8 +56,14 @@ jobs:
           BRANCH_INPUT="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
           TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-          # IMPORTANT: Use the SSH URL for your GitHub repository
-          REPO_URL="git@github.com:Ishan-ttpl/all-content-service.git"
+          # IMPORTANT: Use the HTTPS URL for your GitHub repository
+          # Inject the PAT for authentication directly into the URL
+          # Using 'x-oauth-basic' as the username is common for PATs
+          # Or you can use any dummy username, the PAT is the password.
+          # For public repos, you might not even need the token in the URL for cloning.
+          # For private repos, it's essential.
+          # Make sure to replace YOUR_GITHUB_USERNAME with your actual GitHub username.
+          REPO_URL="https://Ishan-ttpl:${{ secrets.GH_PAT }}@github.com/Ishan-ttpl/all-content-service.git"
 
           # Default branch
           BRANCH="${BRANCH_INPUT:-lais-v2.0}"
@@ -66,10 +72,9 @@ jobs:
           PROXY_CMD_VALUE="ssh -i id_rsa -W %h:%p sudeepr@4.240.49.92"
 
           # Construct the SSH command as an array to handle complex arguments robustly
-          # Add -A for SSH agent forwarding
+          # We no longer need -A for agent forwarding if Git operations are HTTPS
           SSH_COMMAND_ARRAY=(
             ssh
-            -A # Enables agent forwarding for commands on the remote server
             -o "ProxyCommand=$PROXY_CMD_VALUE"
             -i id_rsa
             all-staging-user@10.3.0.9
@@ -94,11 +99,10 @@ jobs:
                 git pull origin \"$BRANCH\"
               else
                 echo \"Directory is NOT a Git repository. Cleaning and cloning...\"
-                # Clear directory contents, but only if it's not a git repo
                 rm -rf \"$TARGET_DIR\"/* \"$TARGET_DIR\"/.* 2>/dev/null || true
-                git clone \"$REPO_URL\" . || { echo \"Error: Failed to clone repository ($REPO_URL). Check URL and SSH key access.\"; exit 1; }
+                git clone \"$REPO_URL\" . || { echo \"Error: Failed to clone repository ($REPO_URL). Check URL and PAT access.\"; exit 1; }
                 # After cloning, ensure we are on the correct branch
-                cd \"$TARGET_DIR\" && git checkout \"$BRANCH\" # cd again in case clone changed context
+                cd \"$TARGET_DIR\" && git checkout \"$BRANCH\"
               fi && \
               
               echo \"Running deploy.sh...\" && \
@@ -127,8 +131,7 @@ jobs:
               fi && \
               
               echo \"Fetching all latest changes and tags...\" && \
-              git fetch --all --tags && \
-              echo \"Checking out tag: $ROLLBACK_TAG...\" && \
+              git fetch --all && \ # git fetch --all --tags is fine too, but git fetch --all usually gets tags too.
               git checkout \"tags/$ROLLBACK_TAG\" && \
               
               echo \"Running deploy.sh after rollback...\" && \
