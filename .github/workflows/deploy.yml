@@ -37,19 +37,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup SSH Key and Environment Vars
+      - name: Setup SSH Key and Config
         run: |
-          echo "${{ secrets.SSH_KEY }}" > id_rsa_target
-          chmod 600 id_rsa_target
-
-          echo "${{ secrets.SSH_KEY }}" > id_rsa_jump
-          chmod 600 id_rsa_jump
+          echo "${{ secrets.SSH_KEY }}" > id_rsa
+          chmod 600 id_rsa
+          echo -e "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null\n" > ssh_config
 
           echo "host=${{ secrets.TN_STAGING_HOST }}" >> "$GITHUB_ENV"
           echo "jump_host=${{ secrets.JUMPHOST }}" >> "$GITHUB_ENV"
           echo "target_dir=/home/all-staging-user/all-services/all-content-deploy" >> "$GITHUB_ENV"
 
-      - name: Execute deploy or rollback
+      - name: Deploy or Rollback
         run: |
           ACTION="${{ github.event.inputs.action }}"
           HOST="${{ env.host }}"
@@ -58,11 +56,9 @@ jobs:
           BRANCH="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
 
-          echo -e "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null\n" > ssh_config
-
-          SSH_COMMAND="ssh -F ssh_config -i id_rsa_jump -J $JUMP_HOST -i id_rsa_target $HOST"
-
           echo "Running action: $ACTION"
+
+          SSH_COMMAND="ssh -F ssh_config -i id_rsa -J $JUMP_HOST $HOST"
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to $HOST"
@@ -73,7 +69,7 @@ jobs:
               docker-compose down || true && \
               docker-compose up -d --build && \
               docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
-
+          
           elif [[ "$ACTION" == "rollback" ]]; then
             if [[ -z \"$ROLLBACK_TAG\" ]]; then
               echo '::error::Rollback tag is required'
@@ -86,6 +82,7 @@ jobs:
               docker-compose down || true && \
               docker-compose up -d --build && \
               docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true"
+          
           else
             echo "::error::Invalid action: $ACTION"
             exit 1
