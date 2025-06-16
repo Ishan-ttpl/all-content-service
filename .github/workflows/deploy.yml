@@ -41,8 +41,8 @@ jobs:
         run: |
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
-          eval "$(ssh-agent -s)"
-          ssh-add id_rsa
+          eval "$(ssh-agent -s)" # Start SSH agent
+          ssh-add id_rsa        # Add key to agent
 
           mkdir -p ~/.ssh
           echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
@@ -56,7 +56,8 @@ jobs:
           BRANCH_INPUT="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
           TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-          REPO_URL="git@github.com:your-organization/all-content-service.git" # <--- IMPORTANT: Replace with your actual repository SSH URL
+          # IMPORTANT: Use the SSH URL for your GitHub repository
+          REPO_URL="git@github.com:Ishan-ttpl/all-content-service.git"
 
           # Default branch
           BRANCH="${BRANCH_INPUT:-lais-v2.0}"
@@ -65,8 +66,10 @@ jobs:
           PROXY_CMD_VALUE="ssh -i id_rsa -W %h:%p sudeepr@4.240.49.92"
 
           # Construct the SSH command as an array to handle complex arguments robustly
+          # Add -A for SSH agent forwarding
           SSH_COMMAND_ARRAY=(
             ssh
+            -A # Enables agent forwarding for commands on the remote server
             -o "ProxyCommand=$PROXY_CMD_VALUE"
             -i id_rsa
             all-staging-user@10.3.0.9
@@ -75,39 +78,34 @@ jobs:
           echo "Running action: $ACTION"
 
           # Define the base remote command structure
-          # This command will be passed to ssh
           REMOTE_COMMAND=""
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server..."
-            # Build the remote command string for deployment
-            # We first ensure the target directory exists.
-            # Then, attempt to pull/checkout. If it fails (not a git repo),
-            # clean it and clone. Finally, run docker-compose and deploy.sh.
             REMOTE_COMMAND="
               mkdir -p \"$TARGET_DIR\" && \
               cd \"$TARGET_DIR\" || { echo \"Error: Could not navigate to $TARGET_DIR\"; exit 1; } && \
               
-              if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-                echo \"Directory is not a Git repository. Cleaning and cloning...\"
-                # Clear the directory contents before cloning
-                rm -rf \"$TARGET_DIR\"/* \"$TARGET_DIR\"/.* 2>/dev/null || true # Remove all files/dirs, ignore errors for non-existent dotfiles
-                git clone \"$REPO_URL\" . || { echo \"Error: Failed to clone repository.\"; exit 1; }
+              # Check if it's a Git repository
+              if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+                echo \"Directory is a Git repository. Fetching and pulling...\"
+                git fetch --all && \
+                git checkout \"$BRANCH\" && \
+                git pull origin \"$BRANCH\"
+              else
+                echo \"Directory is NOT a Git repository. Cleaning and cloning...\"
+                # Clear directory contents, but only if it's not a git repo
+                rm -rf \"$TARGET_DIR\"/* \"$TARGET_DIR\"/.* 2>/dev/null || true
+                git clone \"$REPO_URL\" . || { echo \"Error: Failed to clone repository ($REPO_URL). Check URL and SSH key access.\"; exit 1; }
+                # After cloning, ensure we are on the correct branch
+                cd \"$TARGET_DIR\" && git checkout \"$BRANCH\" # cd again in case clone changed context
               fi && \
-              
-              echo \"Fetching all latest changes...\" && \
-              git fetch --all && \
-              echo \"Checking out branch: $BRANCH...\" && \
-              git checkout \"$BRANCH\" && \
-              echo \"Pulling latest changes for $BRANCH...\" && \
-              git pull origin \"$BRANCH\" && \
               
               echo \"Running deploy.sh...\" && \
               if [ -f \"./deploy.sh\" ]; then
                 bash ./deploy.sh \"$TARGET_DIR\" \"$BRANCH\" \"$ACTION\"
               else
-                echo \"Error: deploy.sh not found in $TARGET_DIR. Running basic docker commands.\"
-                # Fallback docker commands if deploy.sh is missing
+                echo \"Error: deploy.sh not found in $TARGET_DIR. Running basic docker commands instead.\" && \
                 docker-compose down || true && \
                 docker-compose up -d --build && \
                 docker image prune -f || true
@@ -120,7 +118,6 @@ jobs:
               exit 1
             fi
             echo "Rolling back to tag $ROLLBACK_TAG on target server..."
-            # Build the remote command string for rollback
             REMOTE_COMMAND="
               cd \"$TARGET_DIR\" || { echo \"Error: Could not navigate to $TARGET_DIR\"; exit 1; } && \
               
@@ -138,8 +135,7 @@ jobs:
               if [ -f \"./deploy.sh\" ]; then
                 bash ./deploy.sh \"$TARGET_DIR\" \"$ROLLBACK_TAG\" \"$ACTION\"
               else
-                echo \"Error: deploy.sh not found in $TARGET_DIR. Running basic docker commands.\"
-                # Fallback docker commands if deploy.sh is missing
+                echo \"Error: deploy.sh not found in $TARGET_DIR. Running basic docker commands instead.\" && \
                 docker-compose down || true && \
                 docker-compose up -d --build && \
                 docker image prune -f || true
