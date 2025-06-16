@@ -56,6 +56,7 @@ jobs:
           BRANCH_INPUT="${{ github.event.inputs.branch }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
           TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
+          REPOSITORY_URL="git@github.com:your-organization/all-content-service.git" # <--- IMPORTANT: REPLACE WITH YOUR ACTUAL REPO SSH URL
 
           # Default branch
           BRANCH="${BRANCH_INPUT:-lais-v2.0}"
@@ -75,14 +76,19 @@ jobs:
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to target server..."
-            # Execute the SSH command using the array
-            "${SSH_COMMAND_ARRAY[@]}" "cd \"$TARGET_DIR\" && \
+            # Check if .git directory exists and clone if not.
+            # Then navigate, pull, and run deploy.sh
+            "${SSH_COMMAND_ARRAY[@]}" "
+              if [ ! -d \"$TARGET_DIR/.git\" ]; then
+                echo \"Repository not found. Cloning into $TARGET_DIR...\"
+                git clone \"$REPOSITORY_URL\" \"$TARGET_DIR\"
+              fi; \
+              cd \"$TARGET_DIR\" && \
               git fetch --all && \
               git checkout \"$BRANCH\" && \
               git pull origin \"$BRANCH\" && \
-              docker-compose down || true && \
-              docker-compose up -d --build && \
-              docker image prune -f || true"
+              chmod +x deploy.sh && \
+              ./deploy.sh" # <--- IMPORTANT: Execute your deploy.sh script here
 
           elif [[ "$ACTION" == "rollback" ]]; then
             if [[ -z "$ROLLBACK_TAG" ]]; then
@@ -90,13 +96,17 @@ jobs:
               exit 1
             fi
             echo "Rolling back to tag $ROLLBACK_TAG on target server..."
-            # Execute the SSH command using the array
-            "${SSH_COMMAND_ARRAY[@]}" "cd \"$TARGET_DIR\" && \
+            # For rollback, we still need to ensure the repo is there and run appropriate commands
+            "${SSH_COMMAND_ARRAY[@]}" "
+              if [ ! -d \"$TARGET_DIR/.git\" ]; then
+                echo \"Repository not found for rollback. Please ensure it's cloned.\"
+                exit 1 # Or add cloning logic here too if needed for rollbacks on fresh systems
+              fi; \
+              cd \"$TARGET_DIR\" && \
               git fetch --all --tags && \
               git checkout \"tags/$ROLLBACK_TAG\" && \
-              docker-compose down || true && \
-              docker-compose up -d --build && \
-              docker image prune -f || true"
+              chmod +x deploy.sh && \
+              ./deploy.sh" # <--- IMPORTANT: You might need to adapt deploy.sh for rollback scenarios, or have a separate rollback script.
           else
             echo "::error::Invalid action: $ACTION"
             exit 1
