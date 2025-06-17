@@ -10,8 +10,10 @@ services:
     env_file:
       - .env
     networks:
-      - all-learner-ai-services_ai-network # <--- CHANGED HERE
+      # --- CHANGE THIS LINE ---
+      - all-learner-ai-services_ai-network # <-- Use underscores here!
 
 networks:
-  all-learner-ai-services_ai-network: # <--- CHANGED HERE
+  # --- CHANGE THIS LINE ---
+  all-learner-ai-services_ai-network: # <-- Use underscores here!
     driver: bridge
