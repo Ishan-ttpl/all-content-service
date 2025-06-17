@@ -123,6 +123,7 @@ jobs:
       - name: Set up SSH keys and config
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > /tmp/id_rsa
           chmod 600 /tmp/id_rsa
           case "$ENVIRONMENT" in
@@ -155,25 +156,58 @@ jobs:
           if [[ -n "$JUMP_HOST" ]]; then
             echo "jump_host=$JUMP_HOST" >> "$GITHUB_ENV"
           fi
+          # Add known hosts to avoid verification issues
+          ssh-keyscan -H $(echo $HOST | cut -d '@' -f 2) >> ~/.ssh/known_hosts 2>/dev/null || true
+          if [[ -n "$JUMP_HOST" ]]; then
+            ssh-keyscan -H $(echo $JUMP_HOST | cut -d '@' -f 2) >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
 
       - name: Set up SSH commands
         run: |
           if [[ -n "${{ env.jump_host }}" ]]; then
-            SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i /tmp/id_rsa -J ${{ env.jump_host }} ${{ env.host }}"
-            SCP_COMMAND="scp -o StrictHostKeyChecking=no -i /tmp/id_rsa -o ProxyJump=${{ env.jump_host }}"
+            SSH_COMMAND="ssh -v -o StrictHostKeyChecking=no -i /tmp/id_rsa -J ${{ env.jump_host }} ${{ env.host }}"
+            SCP_COMMAND="scp -v -o StrictHostKeyChecking=no -i /tmp/id_rsa -o ProxyJump=${{ env.jump_host }}"
           else
-            SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i /tmp/id_rsa ${{ env.host }}"
-            SCP_COMMAND="scp -o StrictHostKeyChecking=no -i /tmp/id_rsa"
+            SSH_COMMAND="ssh -v -o StrictHostKeyChecking=no -i /tmp/id_rsa ${{ env.host }}"
+            SCP_COMMAND="scp -v -o StrictHostKeyChecking=no -i /tmp/id_rsa"
           fi
           echo "SSH_COMMAND=$SSH_COMMAND" >> "$GITHUB_ENV"
           echo "SCP_COMMAND=$SCP_COMMAND" >> "$GITHUB_ENV"
 
-      - name: Create .env file on target server
+      - name: Debug SSH connectivity
+        run: |
+          echo "Debugging SSH connectivity..."
+          echo "Host: ${{ env.host }}"
+          echo "Jump Host: ${{ env.jump_host }}"
+          echo "SSH Key exists: $(ls -l /tmp/id_rsa)"
+          if [[ -n "${{ env.jump_host }}" ]]; then
+            echo "Testing jump host connectivity..."
+            ssh -v -o StrictHostKeyChecking=no -i /tmp/id_rsa ${{ env.jump_host }} "echo Jump host reachable" || echo "Failed to connect to jump host"
+            echo "Testing target host via jump host..."
+            ${{ env.SSH_COMMAND }} "echo Target host reachable" || echo "Failed to connect to target host"
+          else
+            echo "Testing direct host connectivity..."
+            ${{ env.SSH_COMMAND }} "echo Host reachable" || echo "Failed to connect to host"
+          fi
+          echo "Known hosts file:"
+          cat ~/.ssh/known_hosts || echo "No known hosts file"
+
+      - name: Create .env file
         run: |
           echo "${{ secrets.ENV_FILE }}" > .env
           chmod 600 .env
-          ${{ env.SCP_COMMAND }} .env ${{ env.host }}:${{ env.target_dir }}/.env
-          ${{ env.SSH_COMMAND }} "ls -l ${{ env.target_dir }}/.env"
+          ls -l .env
+
+      - name: Copy .env to target server
+        run: |
+          ${{ env.SCP_COMMAND }} .env ${{ env.host }}:${{ env.target_dir }}/.env || { echo "::error::Failed to copy .env to target server"; exit 1; }
+
+      - name: Verify .env on target server
+        run: |
+          ${{ env.SSH_COMMAND }} "ls -l ${{ env.target_dir }}/.env" || { echo "::error::Failed to verify .env on target server"; exit 1; }
+
+      - name: Clean up .env locally
+        run: |
           rm -f .env
 
       - name: Deploy or rollback
@@ -204,3 +238,4 @@ jobs:
         if: always()
         run: |
           rm -f /tmp/id_rsa
+```
