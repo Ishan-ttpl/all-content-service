@@ -13,16 +13,25 @@ fi
 
 echo "Deploying to $TARGET_DIR with $BRANCH_OR_TAG for action $ACTION"
 
+# Ensure target directory exists and is a Git repo
 cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
+
+if [[ ! -d .git ]]; then
+  echo "Error: $TARGET_DIR is not a Git repository"
+  exit 1
+fi
+
+# Ensure docker-compose.yml exists
+if [[ ! -f docker-compose.yml ]]; then
+  echo "Error: docker-compose.yml not found in $TARGET_DIR"
+  exit 1
+fi
 
 echo "Cleaning up old Docker environment..."
 docker-compose down --remove-orphans || true
 docker rm -f content-service || true
 docker network rm ai-network || true
-docker network create all-learner-ai-services-ai-network || true
-
-echo "Checking docker-compose.yml..."
-cat docker-compose.yml
+docker network create ai-network || true
 
 echo "Cleaning up Git working directory..."
 git stash --include-untracked || true
@@ -31,21 +40,30 @@ git clean -fd || true
 
 if [[ "$ACTION" == "deploy" ]]; then
   echo "Deploying branch $BRANCH_OR_TAG..."
-  git fetch --all || { echo "Failed to fetch"; exit 1; }
-  if ! git checkout "$BRANCH_OR_TAG" 2>/dev/null; then
-    echo "Branch $BRANCH_OR_TAG does not exist, checking out main..."
-    git checkout main || { echo "Failed to checkout main"; exit 1; }
-    BRANCH_OR_TAG="main"
+  git fetch --all || { echo "Failed to fetch from remote"; exit 1; }
+
+  # Check if branch exists
+  if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_OR_TAG"; then
+    git checkout "$BRANCH_OR_TAG" || { echo "Failed to checkout $BRANCH_OR_TAG"; exit 1; }
+    git reset --hard "origin/$BRANCH_OR_TAG" || { echo "Failed to reset to origin/$BRANCH_OR_TAG"; exit 1; }
+    git clean -fd || { echo "Failed to clean"; exit 1; }
+    git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull from origin $BRANCH_OR_TAG"; exit 1; }
+  else
+    echo "Error: Branch $BRANCH_OR_TAG does not exist"
+    exit 1
   fi
-  git reset --hard "origin/$BRANCH_OR_TAG" || { echo "Failed to reset to origin/$BRANCH_OR_TAG"; exit 1; }
-  git clean -fd || { echo "Failed to clean"; exit 1; }
-  git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull from origin $BRANCH_OR_TAG"; exit 1; }
+
 elif [[ "$ACTION" == "rollback" ]]; then
   echo "Rolling back to tag $BRANCH_OR_TAG..."
   git fetch --all --tags || { echo "Failed to fetch tags"; exit 1; }
-  git checkout "tags/$BRANCH_OR_TAG" || { echo "Failed to checkout tag $BRANCH_OR_TAG"; exit 1; }
-  git reset --hard "tags/$BRANCH_OR_TAG" || { echo "Failed to reset to tags/$BRANCH_OR_TAG"; exit 1; }
-  git clean -fd || { echo "Failed to clean"; exit 1; }
+
+  if git rev-parse "$BRANCH_OR_TAG" >/dev/null 2>&1; then
+    git checkout "$BRANCH_OR_TAG" || { echo "Failed to checkout tag $BRANCH_OR_TAG"; exit 1; }
+    git clean -fd || { echo "Failed to clean"; exit 1; }
+  else
+    echo "Error: Tag $BRANCH_OR_TAG does not exist"
+    exit 1
+  fi
 else
   echo "Invalid action: $ACTION"
   exit 1
