@@ -1,32 +1,47 @@
 #!/bin/bash
-set -e
-TARGET_DIR="$1"
-REF="$2"  # Branch for deploy, tag for rollback
-ACTION="$3"  # deploy or rollback
 
-cd "$TARGET_DIR" || { echo "Error: Directory $TARGET_DIR not found."; exit 1; }
-echo "Fetching all latest changes..."
-git fetch --all
-if [ "$ACTION" = "deploy" ]; then
-    echo "Checking out branch: $REF..."
-    git checkout "$REF" || { echo "Error: Failed to checkout branch $REF."; exit 1; }
-    echo "Pulling latest changes for $REF..."
-    git pull origin "$REF" || { echo "Error: Failed to pull from origin $REF."; exit 1; }
-elif [ "$ACTION" = "rollback" ]; then
-    echo "Checking out tag: $REF..."
-    git checkout "tags/$REF" || { echo "Error: Failed to checkout tag $REF."; exit 1; }
-else
-    echo "Error: Invalid action $ACTION. Expected 'deploy' or 'rollback'."
-    exit 1
+set -e
+
+TARGET_DIR="$1"
+BRANCH_OR_TAG="$2"
+ACTION="$3"
+
+if [[ -z "$TARGET_DIR" || -z "$BRANCH_OR_TAG" || -z "$ACTION" ]]; then
+  echo "Usage: $0 <target_dir> <branch_or_tag> <deploy|rollback>"
+  exit 1
 fi
-echo "Removing existing content-service container..."
-docker rm -f content-service || echo "No content-service container to remove."
-echo "Stopping existing Docker containers..."
-docker-compose down || echo "No running containers to stop."
-echo "Building and starting new Docker containers..."
-docker-compose up -d --build || { echo "Error: Docker compose failed."; exit 1; }
-echo "Cleaning dangling Docker images..."
-docker images --no-trunc -aqf "dangling=true" | xargs docker rmi || echo "No dangling images."
-echo "Removing temporary .env file..."
-rm -f .env || echo "No .env file to remove."
-echo "$ACTION complete for $REF."
+
+cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
+
+echo "Cleaning up old Docker environment..."
+docker-compose down --remove-orphans || true
+docker rm -f content-service || true
+docker network rm ai-network || true
+docker network create all-learner-ai-services-ai-network || true
+
+echo "Checking docker-compose.yml..."
+cat docker-compose.yml
+
+echo "Cleaning up Git working directory..."
+git stash --include-untracked || true
+git reset --hard || true
+git clean -fd || true
+
+if [[ "$ACTION" == "deploy" ]]; then
+  echo "Deploying branch $BRANCH_OR_TAG..."
+  git fetch --all
+  if ! git checkout "$BRANCH_OR_TAG" 2>/dev/null; then
+    echo "Branch $BRANCH_OR_TAG does not exist, checking out main..."
+    git checkout main || { echo "Failed to checkout main"; exit 1; }
+    BRANCH_OR_TAG="main"
+  fi
+  git reset --hard "origin/$BRANCH_OR_TAG" || { echo "Failed to reset to origin/$BRANCH_OR_TAG"; exit 1; }
+  git clean -fd
+  git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull from origin $BRANCH_OR_TAG"; exit 1; }
+elif [[ "$ACTION" == "rollback" ]]; then
+  echo "Rolling back to tag $BRANCH_OR_TAG..."
+  git fetch --all --tags
+  git checkout "tags/$BRANCH_OR_TAG" || { echo "Failed to checkout tag $BRANCH_OR_TAG"; exit 1; }
+  git reset --hard "tags/$BRANCH_OR_TAG"
+  git clean -fd
+else
