@@ -1,10 +1,6 @@
 name: Deploy or Rollback All-Content-Service
 
 on:
-  push:
-    tags:
-      - 'deploy-tn-staging-*'
-
   workflow_dispatch:
     inputs:
       action:
@@ -23,87 +19,87 @@ on:
         options:
           - tn-staging
       branch:
-        description: 'Branch to deploy (only for "deploy" action)'
+        description: 'Branch to deploy (only for deploy)'
         required: false
+        default: 'main'
       rollback_tag:
-        description: 'Tag to rollback to (only for "rollback" action, e.g., deploy-tn-staging-v1.0.0)'
+        description: 'Tag to rollback to (only for rollback)'
         required: false
 
 jobs:
   deploy-or-rollback:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    environment: tn-staging
 
     steps:
-    - name: Determine environment and action
-      id: vars
-      run: |
-        ENVIRONMENT=""
-        ACTION=""
-        if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
-          TAG_PREFIX="${GITHUB_REF#refs/tags/deploy-}"
-          if [[ "$TAG_PREFIX" == "tn-staging"* ]]; then
-            ENVIRONMENT="tn-staging"
-            ACTION="deploy"
-            echo "Determined action: deploy via tag push to tn-staging environment."
-          else
-            echo "::error::Invalid deploy tag format. Expected 'deploy-tn-staging-*'."
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up SSH keys and config
+        run: |
+          echo "${{ secrets.SSH_KEY }}" > id_rsa
+          chmod 600 id_rsa
+          mkdir -p ~/.ssh
+          echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Set target host and directory
+        run: |
+          echo "host=${{ secrets.TN_STAGING_HOST }}" >> $GITHUB_ENV
+          echo "jump_host=${{ secrets.JUMPHOST }}" >> $GITHUB_ENV
+          echo "target_dir=/home/all-staging-user/all-services/all-content-deploy" >> $GITHUB_ENV
+
+      - name: Create .env file on target server
+        run: |
+          HOST="${{ env.host }}"
+          JUMP_HOST="${{ env.jump_host }}"
+          TARGET_DIR="${{ env.target_dir }}"
+          if [[ -z "$HOST" || -z "$JUMP_HOST" ]]; then
+            echo "::error::HOST or JUMP_HOST is not set"
             exit 1
           fi
-        else
-          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          echo "${{ secrets.ENV_FILE }}" > .env
+          SCP_COMMAND="scp -i id_rsa -o ProxyCommand='ssh -W %h:%p -i id_rsa $JUMP_HOST'"
+          $SCP_COMMAND .env $HOST:$TARGET_DIR/.env
+
+      - name: Execute deploy or rollback
+        run: |
           ACTION="${{ github.event.inputs.action }}"
-          echo "Workflow dispatched: Action='$ACTION', Environment='$ENVIRONMENT'."
-        fi
-        echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
-        echo "action=$ACTION" >> "$GITHUB_OUTPUT"
-
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Set SSH Key and Target Host
-      run: |
-        echo "${{ secrets.SSH_KEY }}" > key.pem
-        echo "${{ secrets.SSH_KEY }}" > jump_key.pem
-        chmod 600 key.pem jump_key.pem
-        echo "host=${{ secrets.TN_STAGING_HOST }}" >> "$GITHUB_ENV"
-        echo "target_dir=/home/all-staging-user/all-services/all-content-deploy" >> "$GITHUB_ENV"
-        echo "jump_host=${{ secrets.JUMPHOST }}" >> "$GITHUB_ENV"
-
-    - name: Create .env file on target server
-      run: |
-        HOST="${{ env.host }}"
-        JUMP_HOST="${{ env.jump_host }}"
-        TARGET_DIR="${{ env.target_dir }}"
-        SCP_COMMAND="scp -o StrictHostKeyChecking=no -i jump_key.pem -o ProxyJump=$JUMP_HOST -i key.pem"
-        echo "${{ secrets.ENV_FILE }}" > .env
-        $SCP_COMMAND .env $HOST:$TARGET_DIR/.env
-
-    - name: Perform Deploy or Rollback
-      run: |
-        ACTION="${{ steps.vars.outputs.action }}"
-        HOST="${{ env.host }}"
-        TARGET_DIR="${{ env.target_dir }}"
-        JUMP_HOST="${{ env.jump_host }}"
-        SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i jump_key.pem -J $JUMP_HOST -i key.pem $HOST"
-        SCP_COMMAND="scp -o StrictHostKeyChecking=no -i jump_key.pem -o ProxyJump=$JUMP_HOST -i key.pem"
-        if [[ "$ACTION" == "deploy" ]]; then
-          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-          echo "Initiating deployment to $HOST from branch: $BRANCH"
-          $SCP_COMMAND deploy.sh $HOST:/home/all-staging-user/deploy.sh
-          $SSH_COMMAND "chmod +x /home/all-staging-user/deploy.sh && /home/all-staging-user/deploy.sh $TARGET_DIR $BRANCH deploy"
-        elif [[ "$ACTION" == "rollback" ]]; then
+          HOST="${{ env.host }}"
+          JUMP_HOST="${{ env.jump_host }}"
+          TARGET_DIR="${{ env.target_dir }}"
+          BRANCH="${{ github.event.inputs.branch || 'main' }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
-          if [[ -z "$ROLLBACK_TAG" ]]; then
-            echo "::error::Rollback tag is required for rollback action."
+          SSH_COMMAND="ssh -i id_rsa -o ProxyCommand='ssh -W %h:%p -i id_rsa $JUMP_HOST' $HOST"
+
+          if [[ "$ACTION" == "deploy" ]]; then
+            echo "Deploying branch $BRANCH to $HOST"
+            $SSH_COMMAND "cd $TARGET_DIR && \
+              git fetch --all && \
+              git checkout $BRANCH || git checkout lais-v2.0 && \
+              git pull origin $BRANCH || git pull origin lais-v2.0 && \
+              docker-compose down || true && \
+              docker-compose up -d --build && \
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true && \
+              rm -f .env"
+
+          elif [[ "$ACTION" == "rollback" ]]; then
+            if [[ -z "$ROLLBACK_TAG" ]]; then
+              echo "::error::Rollback tag is required"
+              exit 1
+            fi
+            echo "Rolling back to tag $ROLLBACK_TAG on $HOST"
+            $SSH_COMMAND "cd $TARGET_DIR && \
+              git fetch --all --tags && \
+              git checkout tags/$ROLLBACK_TAG && \
+              docker-compose down || true && \
+              docker-compose up -d --build && \
+              docker images --no-trunc -aqf 'dangling=true' | xargs docker rmi || true && \
+              rm -f .env"
+
+          else
+            echo "::error::Invalid action: $ACTION"
             exit 1
           fi
-          echo "Initiating rollback to tag: $ROLLBACK_TAG on $HOST"
-          $SCP_COMMAND deploy.sh $HOST:/home/all-staging-user/deploy.sh
-          $SSH_COMMAND "chmod +x /home/all-staging-user/deploy.sh && /home/all-staging-user/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback"
-        else
-          echo "::error::Invalid action specified: $ACTION"
-          exit 1
-        fi
