@@ -25,4 +25,6 @@ echo "Building and starting new Docker containers..."
 docker-compose up -d --build || { echo "Error: Docker compose failed."; exit 1; }
 echo "Cleaning dangling Docker images..."
 docker images --no-trunc -aqf "dangling=true" | xargs docker rmi || echo "No dangling images."
+echo "Removing temporary .env file..."
+rm -f .env || echo "No .env file to remove."
 echo "$ACTION complete for $REF."
