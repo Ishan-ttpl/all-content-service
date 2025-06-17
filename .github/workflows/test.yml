@@ -84,7 +84,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install rsync and dos2unix
+      - name: Install rsync and dos2unix (on GitHub Actions runner)
         run: |
           sudo apt-get update
           sudo apt-get install -y rsync dos2unix
@@ -193,7 +193,15 @@ jobs:
             ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
           else
             ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
+
+      # --- START OF ADDED/MODIFIED SECTION ---
+      - name: Install dos2unix on target server (if needed for environment)
+        run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
+            ssh -F /tmp/ssh_config target "sudo apt-get update && sudo apt-get install -y dos2unix" || { echo "::warning::Failed to install dos2unix on target server for $ENVIRONMENT. This might cause issues. Ensure the SSH user has sudo privileges without a password for this command."; }
           fi
+      # --- END OF ADDED/MODIFIED SECTION ---
 
       - name: Create and transfer .env file
         run: |
@@ -235,12 +243,13 @@ jobs:
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
-          dos2unix deploy.sh
+          dos2unix deploy.sh # This converts the script on the GitHub Actions runner
           cat deploy.sh
           wc -l deploy.sh
           od -c deploy.sh | head -n 10
           bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh locally for $ENVIRONMENT"; exit 1; }
           rsync -avz -e "ssh -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/deploy.sh || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
+          # Now, dos2unix on the target server should succeed because it's installed
           ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/deploy.sh && cat $TARGET_DIR/deploy.sh && wc -l $TARGET_DIR/deploy.sh && od -c $TARGET_DIR/deploy.sh | head -n 10 && bash -n $TARGET_DIR/deploy.sh" || { echo "::error::Syntax error in deploy.sh on target server for $ENVIRONMENT"; exit 1; }
 
       - name: Deploy or rollback
