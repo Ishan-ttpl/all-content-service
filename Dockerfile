@@ -7,7 +7,9 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build || echo "No build step defined, skipping"
+# CRITICAL CHANGE 1: Remove the `|| echo ...` to ensure the build step fails the Docker build if it truly fails.
+# This makes sure the `dist` folder is actually created or you get an error during build.
+RUN npm run build 
 
 # Stage 2: Runtime
 FROM node:16.13.2-alpine
@@ -26,4 +28,6 @@ COPY --from=builder /app/dist ./dist
 ARG PORT=3000
 EXPOSE $PORT
 
-CMD ["node", "dist/index.js"]
+# CRITICAL CHANGE 2: Point to 'dist/main.js' as the entry point.
+# This is the standard output for NestJS applications.
+CMD ["node", "dist/main.js"]
