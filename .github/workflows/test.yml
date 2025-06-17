@@ -1,0 +1,175 @@
+name: Deploy or Rollback All-Content-Service
+
+on:
+  push:
+    tags:
+      - 'deploy-test-rig-dev-*'
+      - 'deploy-test-rig-prod-*'
+      - 'deploy-tn-dev-*'
+      - 'deploy-tn-staging-*'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - rollback
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'test-rig-dev'
+        type: choice
+        options:
+          - test-rig-dev
+          - test-rig-prod
+          - tn-dev
+          - tn-staging
+      branch:
+        description: 'Branch to deploy (only for deploy)'
+        required: false
+        default: 'main'
+      rollback_tag:
+        description: 'Tag to rollback to (only for rollback, e.g., deploy-tn-staging-v1.0.0)'
+        required: false
+
+jobs:
+  deploy-or-rollback:
+    runs-on: ubuntu-22.04
+    environment: ${{ github.event.inputs.environment || 'test-rig-dev' }}
+
+    steps:
+      - name: Determine environment and action
+        id: vars
+        run: |
+          ENVIRONMENT=""
+          ACTION=""
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_PREFIX="${GITHUB_REF#refs/tags/deploy-}"
+            if [[ "$TAG_PREFIX" == "test-rig-dev"* ]]; then
+              ENVIRONMENT="test-rig-dev"
+            elif [[ "$TAG_PREFIX" == "test-rig-prod"* ]]; then
+              ENVIRONMENT="test-rig-prod"
+            elif [[ "$TAG_PREFIX" == "tn-dev"* ]]; then
+              ENVIRONMENT="tn-dev"
+            elif [[ "$TAG_PREFIX" == "tn-staging"* ]]; then
+              ENVIRONMENT="tn-staging"
+            else
+              echo "::error::Invalid tag format. Expected 'deploy-<env>-*'."
+              exit 1
+            fi
+            ACTION="deploy"
+          else
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+            ACTION="${{ github.event.inputs.action }}"
+          fi
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync
+
+      - name: Validate secrets
+        run: |
+          if [[ -z "${{ secrets.SSH_KEY }}" || -z "${{ secrets.TEST_RIG_DEV_HOST }}" || -z "${{ secrets.TEST_RIG_PROD_HOST }}" || -z "${{ secrets.TN_DEV_HOST }}" || -z "${{ secrets.TN_STAGING_HOST }}" || -z "${{ secrets.JUMPHOST }}" || -z "${{ secrets.ENV_FILE }}" ]]; then
+            echo "::error::Missing required secrets"
+            exit 1
+          fi
+          if [[ "${{ secrets.TEST_RIG_DEV_HOST }}" != *"@"* || "${{ secrets.TEST_RIG_PROD_HOST }}" != *"@"* || "${{ secrets.TN_DEV_HOST }}" != *"@"* || "${{ secrets.TN_STAGING_HOST }}" != *"@"* || "${{ secrets.JUMPHOST }}" != *"@"* ]]; then
+            echo "::error::Invalid host format (expected user@host)"
+            exit 1
+          fi
+
+      - name: Set up SSH keys and config
+        run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          echo "${{ secrets.SSH_KEY }}" > /tmp/id_rsa
+          chmod 600 /tmp/id_rsa
+          case "$ENVIRONMENT" in
+            "test-rig-dev")
+              HOST="${{ secrets.TEST_RIG_DEV_HOST }}"
+              TARGET_DIR="/home/sudeepr/git/all-content-service"
+              ;;
+            "test-rig-prod")
+              HOST="${{ secrets.TEST_RIG_PROD_HOST }}"
+              TARGET_DIR="/home/sudeepr/all-services/all-content-service"
+              ;;
+            "tn-dev")
+              HOST="${{ secrets.TN_DEV_HOST }}"
+              TARGET_DIR="/home/alldevuser/git/all-content-service"
+              ;;
+            "tn-staging")
+              HOST="${{ secrets.TN_STAGING_HOST }}"
+              TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
+              JUMP_HOST="${{ secrets.JUMPHOST }}"
+              ;;
+            *)
+              echo "::error::Unknown environment: $ENVIRONMENT"
+              exit 1
+              ;;
+          esac
+          REMOTE_USER=$(echo $HOST | cut -d '@' -f 1)
+          echo "host=$HOST" >> "$GITHUB_ENV"
+          echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
+          echo "remote_user=$REMOTE_USER" >> "$GITHUB_ENV"
+          if [[ -n "$JUMP_HOST" ]]; then
+            echo "jump_host=$JUMP_HOST" >> "$GITHUB_ENV"
+          fi
+
+      - name: Set up SSH commands
+        run: |
+          if [[ -n "${{ env.jump_host }}" ]]; then
+            SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i /tmp/id_rsa -J ${{ env.jump_host }} ${{ env.host }}"
+            SCP_COMMAND="scp -o StrictHostKeyChecking=no -i /tmp/id_rsa -o ProxyJump=${{ env.jump_host }}"
+          else
+            SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i /tmp/id_rsa ${{ env.host }}"
+            SCP_COMMAND="scp -o StrictHostKeyChecking=no -i /tmp/id_rsa"
+          fi
+          echo "SSH_COMMAND=$SSH_COMMAND" >> "$GITHUB_ENV"
+          echo "SCP_COMMAND=$SCP_COMMAND" >> "$GITHUB_ENV"
+
+      - name: Create .env file on target server
+        run: |
+          echo "${{ secrets.ENV_FILE }}" > .env
+          chmod 600 .env
+          ${{ env.SCP_COMMAND }} .env ${{ env.host }}:${{ env.target_dir }}/.env
+          ${{ env.SSH_COMMAND }} "ls -l ${{ env.target_dir }}/.env"
+          rm -f .env
+
+      - name: Deploy or rollback
+        run: |
+          ACTION="${{ steps.vars.outputs.action }}"
+          if [[ "$ACTION" == "deploy" ]]; then
+            BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+            ${{ env.SCP_COMMAND }} deploy.sh ${{ env.host }}:/home/${{ env.remote_user }}/deploy.sh
+            ${{ env.SSH_COMMAND }} "chmod +x /home/${{ env.remote_user }}/deploy.sh && /home/${{ env.remote_user }}/deploy.sh ${{ env.target_dir }} $BRANCH deploy"
+          elif [[ "$ACTION" == "rollback" ]]; then
+            ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+            if [[ -z "$ROLLBACK_TAG" ]]; then
+              echo "::error::Rollback tag required"
+              exit 1
+            fi
+            ${{ env.SCP_COMMAND }} deploy.sh ${{ env.host }}:/home/${{ env.remote_user }}/deploy.sh
+            ${{ env.SSH_COMMAND }} "chmod +x /home/${{ env.remote_user }}/deploy.sh && /home/${{ env.remote_user }}/deploy.sh ${{ env.target_dir }} $ROLLBACK_TAG rollback"
+          else
+            echo "::error::Invalid action: $ACTION"
+            exit 1
+          fi
+
+      - name: Verify container logs
+        run: |
+          ${{ env.SSH_COMMAND }} "docker logs content-service || echo 'Failed to get container logs'"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f /tmp/id_rsa
