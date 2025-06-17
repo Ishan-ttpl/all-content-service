@@ -113,14 +113,23 @@ jobs:
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to staging"
             ssh -F /tmp/ssh_config staging "cd $TARGET_DIR && \
+              git status && \
+              git diff docker-compose.yml || echo 'No diff for docker-compose.yml' && \
               git fetch --all && \
               git checkout $BRANCH || git checkout lais-v2.0 && \
+              git reset --hard origin/$BRANCH && \
+              git clean -fd && \
               git pull origin $BRANCH || git pull origin lais-v2.0 && \
               /bin/bash ./deploy.sh $TARGET_DIR $BRANCH deploy"
           elif [[ "$ACTION" == "rollback" ]]; then
             echo "Rolling back to tag $ROLLBACK_TAG on staging"
             ssh -F /tmp/ssh_config staging "cd $TARGET_DIR && \
+              git status && \
+              git diff docker-compose.yml || echo 'No diff for docker-compose.yml' && \
               git fetch --all --tags && \
+              git checkout tags/$ROLLBACK_TAG && \
+              git reset --hard tags/$ROLLBACK_TAG && \
+              git clean -fd && \
               /bin/bash ./deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback"
           else
             echo "::error::Invalid action: $ACTION"
