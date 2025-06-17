@@ -84,6 +84,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      # --- START: APT CACHING ADDED HERE ---
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/lib/apt/lists
+            /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('**/deploy.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+      # --- END: APT CACHING ADDED HERE ---
+
       - name: Install rsync and dos2unix (on GitHub Actions runner)
         run: |
           sudo apt-get update
@@ -193,15 +205,14 @@ jobs:
             ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
           else
             ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
+          fi # <-- ADDED THIS 'fi'
 
-      # --- START OF ADDED/MODIFIED SECTION ---
       - name: Install dos2unix on target server (if needed for environment)
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
             ssh -F /tmp/ssh_config target "sudo apt-get update && sudo apt-get install -y dos2unix" || { echo "::warning::Failed to install dos2unix on target server for $ENVIRONMENT. This might cause issues. Ensure the SSH user has sudo privileges without a password for this command."; }
           fi
-      # --- END OF ADDED/MODIFIED SECTION ---
 
       - name: Create and transfer .env file
         run: |
@@ -260,7 +271,7 @@ jobs:
           if [[ "$ACTION" == "deploy" ]]; then
             BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
             ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $BRANCH deploy"
-          elif [[ "$ACTION" == "rollback" ]]; then
+          elif [[ "$ACTION" == "rollback" ]; then
             ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
             if [[ -z "$ROLLBACK_TAG" ]]; then
               echo "::error::Rollback tag required for $ENVIRONMENT"
