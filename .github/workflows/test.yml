@@ -80,30 +80,43 @@ jobs:
 
       - name: Validate secrets
         run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           missing_secrets=""
+          invalid_hosts=""
+          # Common secrets required for all environments
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
-          [[ -z "${{ secrets.TEST_RIG_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_DEV_HOST"
-          [[ -z "${{ secrets.TEST_RIG_PROD_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_PROD_HOST"
-          [[ -z "${{ secrets.TN_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TN_DEV_HOST"
-          [[ -z "${{ secrets.TN_STAGING_HOST }}" ]] && missing_secrets="$missing_secrets TN_STAGING_HOST"
           [[ -z "${{ secrets.ENV_FILE }}" ]] && missing_secrets="$missing_secrets ENV_FILE"
-          if [[ "${{ steps.vars.outputs.environment }}" == "tn-staging" && -z "${{ secrets.JUMPHOST }}" ]]; then
-            missing_secrets="$missing_secrets JUMPHOST"
-          fi
+          # Environment-specific host secret
+          case "$ENVIRONMENT" in
+            "test-rig-dev")
+              [[ -z "${{ secrets.TEST_RIG_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_DEV_HOST"
+              [[ "${{ secrets.TEST_RIG_DEV_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TEST_RIG_DEV_HOST"
+              ;;
+            "test-rig-prod")
+              [[ -z "${{ secrets.TEST_RIG_PROD_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_PROD_HOST"
+              [[ "${{ secrets.TEST_RIG_PROD_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TEST_RIG_PROD_HOST"
+              ;;
+            "tn-dev")
+              [[ -z "${{ secrets.TN_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TN_DEV_HOST"
+              [[ "${{ secrets.TN_DEV_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_DEV_HOST"
+              ;;
+            "tn-staging")
+              [[ -z "${{ secrets.TN_STAGING_HOST }}" ]] && missing_secrets="$missing_secrets TN_STAGING_HOST"
+              [[ -z "${{ secrets.JUMPHOST }}" ]] && missing_secrets="$missing_secrets JUMPHOST"
+              [[ "${{ secrets.TN_STAGING_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_STAGING_HOST"
+              [[ "${{ secrets.JUMPHOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts JUMPHOST"
+              ;;
+            *)
+              echo "::error::Unknown environment: $ENVIRONMENT"
+              exit 1
+              ;;
+          esac
           if [[ -n "$missing_secrets" ]]; then
-            echo "::error::Missing required secrets:$missing_secrets"
+            echo "::error::Missing required secrets for $ENVIRONMENT:$missing_secrets"
             exit 1
           fi
-          invalid_hosts=""
-          [[ "${{ secrets.TEST_RIG_DEV_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TEST_RIG_DEV_HOST"
-          [[ "${{ secrets.TEST_RIG_PROD_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TEST_RIG_PROD_HOST"
-          [[ "${{ secrets.TN_DEV_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_DEV_HOST"
-          [[ "${{ secrets.TN_STAGING_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_STAGING_HOST"
-          if [[ "${{ steps.vars.outputs.environment }}" == "tn-staging" && "${{ secrets.JUMPHOST }}" != *"@"* ]]; then
-            invalid_hosts="$invalid_hosts JUMPHOST"
-          fi
           if [[ -n "$invalid_hosts" ]]; then
-            echo "::error::Invalid host format (expected user@host):$invalid_hosts"
+            echo "::error::Invalid host format (expected user@host) for $ENVIRONMENT:$invalid_hosts"
             exit 1
           fi
 
@@ -191,3 +204,4 @@ jobs:
         if: always()
         run: |
           rm -f /tmp/id_rsa
+```
