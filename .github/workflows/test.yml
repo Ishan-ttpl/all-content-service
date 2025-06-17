@@ -84,10 +84,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install rsync
+      - name: Install rsync and dos2unix
         run: |
           sudo apt-get update
-          sudo apt-get install -y rsync
+          sudo apt-get install -y rsync dos2unix
 
       - name: Validate secrets
         run: |
@@ -235,10 +235,13 @@ jobs:
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
+          dos2unix deploy.sh
           cat deploy.sh
-          bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh for $ENVIRONMENT"; exit 1; }
+          wc -l deploy.sh
+          od -c deploy.sh | head -n 10
+          bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh locally for $ENVIRONMENT"; exit 1; }
           rsync -avz -e "ssh -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/deploy.sh || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
-          ssh -F /tmp/ssh_config target "cat $TARGET_DIR/deploy.sh && bash -n $TARGET_DIR/deploy.sh" || { echo "::error::Syntax error in deploy.sh on target server for $ENVIRONMENT"; exit 1; }
+          ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/deploy.sh && cat $TARGET_DIR/deploy.sh && wc -l $TARGET_DIR/deploy.sh && od -c $TARGET_DIR/deploy.sh | head -n 10 && bash -n $TARGET_DIR/deploy.sh" || { echo "::error::Syntax error in deploy.sh on target server for $ENVIRONMENT"; exit 1; }
 
       - name: Deploy or rollback
         run: |
