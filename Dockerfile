@@ -1,20 +1,29 @@
-# Use an official Node.js runtime as the base image
-FROM node:16.13.2
+# Stage 1: Builder
+FROM node:16.13.2-alpine AS builder
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Copy package.json and package-lock.json to the container
 COPY package*.json ./
+RUN npm ci
 
-# Install the application dependencies
-RUN npm install
-
-# Copy the rest of the application code to the container
 COPY . .
+RUN npm run build || echo "No build step defined, skipping"
 
-# Expose the port on which the application will run
+# Stage 2: Runtime
+FROM node:16.13.2-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --only=production && npm cache clean --force
+
+# Copy built app
+COPY --from=builder /app/dist ./dist
+
+# Optional: Copy other runtime assets if needed
+# COPY --from=builder /app/src ./src
+
+ARG PORT=3000
 EXPOSE $PORT
 
-# Start the application
-CMD ["npm", "run", "start:dev"]
+CMD ["node", "dist/index.js"]
