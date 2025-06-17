@@ -42,10 +42,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rsync
 
+      - name: Validate secrets
+        run: |
+          if [[ -z "${{ secrets.SSH_KEY }}" || -z "${{ secrets.TN_STAGING_HOST }}" || -z "${{ secrets.JUMPHOST }}" || -z "${{ secrets.ENV_FILE }}" ]]; then
+            echo "::error::Missing required secrets (SSH_KEY, TN_STAGING_HOST, JUMPHOST, ENV_FILE)"
+            exit 1
+          fi
+
       - name: Set up SSH keys and config
         run: |
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
+          ls -l id_rsa  # Debug: Verify file exists
           mkdir -p ~/.ssh
           echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
@@ -67,9 +75,10 @@ jobs:
           fi
           echo "${{ secrets.ENV_FILE }}" > .env
           chmod 600 .env
-          RSYNC_SSH="ssh -i id_rsa -o ProxyCommand='ssh -W %h:%p -i id_rsa $JUMP_HOST'"
+          RSYNC_SSH="ssh -i id_rsa -o ProxyCommand=\"ssh -W %h:%p -i id_rsa $JUMP_HOST\""
+          echo "RSYNC_SSH: $RSYNC_SSH"  # Debug: Verify command
           rsync -avz -e "$RSYNC_SSH" .env $HOST:$TARGET_DIR/.env
-          rm -f .env id_rsa
+          rm -f .env  # Clean up .env but keep id_rsa
 
       - name: Execute deploy or rollback
         run: |
@@ -79,7 +88,8 @@ jobs:
           TARGET_DIR="${{ env.target_dir }}"
           BRANCH="${{ github.event.inputs.branch || 'main' }}"
           ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
-          SSH_COMMAND="ssh -i id_rsa -o ProxyCommand='ssh -W %h:%p -i id_rsa $JUMP_HOST' $HOST"
+          SSH_COMMAND="ssh -i id_rsa -o ProxyCommand=\"ssh -W %h:%p -i id_rsa $JUMP_HOST\" $HOST"
+          echo "SSH_COMMAND: $SSH_COMMAND"  # Debug: Verify command
 
           if [[ "$ACTION" == "deploy" ]]; then
             echo "Deploying branch $BRANCH to $HOST"
@@ -110,3 +120,8 @@ jobs:
             echo "::error::Invalid action: $ACTION"
             exit 1
           fi
+
+      - name: Cleanup SSH keys
+        if: always()  # Run even if previous steps fail
+        run: |
+          rm -f id_rsa ~/.ssh/config
