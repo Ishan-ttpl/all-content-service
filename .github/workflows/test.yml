@@ -94,10 +94,8 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           missing_secrets=""
           invalid_hosts=""
-          # Common secrets required for all environments
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
           [[ -z "${{ secrets.ENV_FILE }}" ]] && missing_secrets="$missing_secrets ENV_FILE"
-          # Environment-specific host secret
           case "$ENVIRONMENT" in
             "test-rig-dev")
               [[ -z "${{ secrets.TEST_RIG_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_DEV_HOST"
@@ -137,8 +135,8 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > /tmp/id_rsa
           chmod 600 /tmp/id_rsa
-          ls -l /tmp/id_rsa  # Debug: Verify file exists
-          ssh-keygen -l -f /tmp/id_rsa  # Debug: Show key fingerprint
+          ls -l /tmp/id_rsa
+          ssh-keygen -l -f /tmp/id_rsa
           case "$ENVIRONMENT" in
             "test-rig-dev")
               HOST="${{ secrets.TEST_RIG_DEV_HOST }}"
@@ -177,16 +175,15 @@ jobs:
               ;;
           esac
           chmod 600 /tmp/ssh_config
-          ls -l /tmp/ssh_config  # Debug: Verify file exists
-          cat /tmp/ssh_config  # Debug: Verify config
+          ls -l /tmp/ssh_config
+          cat /tmp/ssh_config
           echo "remote_user=$USER" >> "$GITHUB_ENV"
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
-          # Populate known_hosts
           ssh-keyscan -H $HOSTNAME >> ~/.ssh/known_hosts 2>/dev/null || true
           if [[ -n "$JUMPHOST" ]]; then
             ssh-keyscan -H $JUMPHOST_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
           fi
-          cat ~/.ssh/known_hosts  # Debug: Show known_hosts
+          cat ~/.ssh/known_hosts
 
       - name: Test host connectivity
         run: |
@@ -204,10 +201,26 @@ jobs:
           TARGET_DIR="${{ env.target_dir }}"
           echo "${{ secrets.ENV_FILE }}" > .env
           chmod 600 .env
-          ls -l .env  # Debug: Verify .env exists
+          ls -l .env
           rsync -avz -e "ssh -vvv -F /tmp/ssh_config" .env target:$TARGET_DIR/.env || { echo "::error::Failed to rsync .env file for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
           ssh -F /tmp/ssh_config target "ls -l $TARGET_DIR/.env" || { echo "::error::Failed to verify .env on target server for $ENVIRONMENT"; exit 1; }
           rm -f .env
+
+      - name: Verify docker-compose.yml on server
+        run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          TARGET_DIR="${{ env.target_dir }}"
+          ssh -F /tmp/ssh_config target "cat $TARGET_DIR/docker-compose.yml" || { echo "::error::Failed to verify docker-compose.yml for $ENVIRONMENT"; exit 1; }
+
+      - name: Clean up Docker environment
+        run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          TARGET_DIR="${{ env.target_dir }}"
+          ssh -F /tmp/ssh_config target "cd $TARGET_DIR && \
+            docker-compose down --remove-orphans || true && \
+            docker rm -f content-service || true && \
+            docker network rm ai-network || true && \
+            docker network create all-learner-ai-services-ai-network || true" || { echo "::error::Failed to clean Docker environment for $ENVIRONMENT"; exit 1; }
 
       - name: Deploy or rollback
         run: |
