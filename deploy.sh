@@ -22,13 +22,22 @@ docker network create all-learner-ai-services-ai-network || true
 echo "Checking docker-compose.yml..."
 cat docker-compose.yml
 
+echo "Cleaning up Git working directory..."
+git stash --include-untracked || true
+git reset --hard || true
+git clean -fd || true
+
 if [[ "$ACTION" == "deploy" ]]; then
   echo "Deploying branch $BRANCH_OR_TAG..."
   git fetch --all
-  git checkout "$BRANCH_OR_TAG" || { echo "Failed to checkout $BRANCH_OR_TAG, falling back to lais-v2.0"; git checkout lais-v2.0; }
-  git reset --hard origin/"$BRANCH_OR_TAG"
+  if ! git checkout "$BRANCH_OR_TAG" 2>/dev/null; then
+    echo "Branch $BRANCH_OR_TAG does not exist, checking out main..."
+    git checkout main || { echo "Failed to checkout main"; exit 1; }
+    BRANCH_OR_TAG="main"
+  fi
+  git reset --hard "origin/$BRANCH_OR_TAG" || { echo "Failed to reset to origin/$BRANCH_OR_TAG"; exit 1; }
   git clean -fd
-  git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull $BRANCH_OR_TAG, pulling lais-v2.0"; git pull origin lais-v2.0; }
+  git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull from origin $BRANCH_OR_TAG"; exit 1; }
 elif [[ "$ACTION" == "rollback" ]]; then
   echo "Rolling back to tag $BRANCH_OR_TAG..."
   git fetch --all --tags
@@ -36,12 +45,3 @@ elif [[ "$ACTION" == "rollback" ]]; then
   git reset --hard "tags/$BRANCH_OR_TAG"
   git clean -fd
 else
-  echo "Invalid action: $ACTION"
-  exit 1
-fi
-
-echo "Building and starting services..."
-docker-compose pull || { echo "Failed to pull images"; exit 1; }
-docker-compose up -d --build || { echo "Failed to start services"; exit 1; }
-
-echo "Deployment completed."
