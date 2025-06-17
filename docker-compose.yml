@@ -1,7 +1,7 @@
 version: '3.8'
 services:
   content-service:
-    image: all-content-service:latest
+    build: . # <-- This tells Docker Compose to BUILD from the current directory
     container_name: content-service
     ports:
       - "3008:3008"
