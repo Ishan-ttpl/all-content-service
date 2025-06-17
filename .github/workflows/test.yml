@@ -212,6 +212,15 @@ jobs:
           TARGET_DIR="${{ env.target_dir }}"
           ssh -F /tmp/ssh_config target "cat $TARGET_DIR/docker-compose.yml" || { echo "::error::Failed to verify docker-compose.yml for $ENVIRONMENT"; exit 1; }
 
+      - name: Clean up Git working directory
+        run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          TARGET_DIR="${{ env.target_dir }}"
+          ssh -F /tmp/ssh_config target "cd $TARGET_DIR && \
+            git stash --include-untracked || true && \
+            git reset --hard || true && \
+            git clean -fd || true" || { echo "::error::Failed to clean Git working directory for $ENVIRONMENT"; exit 1; }
+
       - name: Clean up Docker environment
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
@@ -227,17 +236,17 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           ACTION="${{ steps.vars.outputs.action }}"
           TARGET_DIR="${{ env.target_dir }}"
-          rsync -avz -e "ssh -F /tmp/ssh_config" deploy.sh target:/home/${{ env.remote_user }}/deploy.sh || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
+          rsync -avz -e "ssh -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/deploy.sh || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
           if [[ "$ACTION" == "deploy" ]]; then
             BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-            ssh -F /tmp/ssh_config target "chmod +x /home/${{ env.remote_user }}/deploy.sh && /home/${{ env.remote_user }}/deploy.sh $TARGET_DIR $BRANCH deploy"
+            ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $BRANCH deploy"
           elif [[ "$ACTION" == "rollback" ]]; then
             ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
             if [[ -z "$ROLLBACK_TAG" ]]; then
               echo "::error::Rollback tag required for $ENVIRONMENT"
               exit 1
             fi
-            ssh -F /tmp/ssh_config target "chmod +x /home/${{ env.remote_user }}/deploy.sh && /home/${{ env.remote_user }}/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback"
+            ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback"
           else
             echo "::error::Invalid action: $ACTION for $ENVIRONMENT"
             exit 1
