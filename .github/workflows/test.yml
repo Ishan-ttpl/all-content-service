@@ -80,12 +80,30 @@ jobs:
 
       - name: Validate secrets
         run: |
-          if [[ -z "${{ secrets.SSH_KEY }}" || -z "${{ secrets.TEST_RIG_DEV_HOST }}" || -z "${{ secrets.TEST_RIG_PROD_HOST }}" || -z "${{ secrets.TN_DEV_HOST }}" || -z "${{ secrets.TN_STAGING_HOST }}" || -z "${{ secrets.JUMPHOST }}" || -z "${{ secrets.ENV_FILE }}" ]]; then
-            echo "::error::Missing required secrets"
+          missing_secrets=""
+          [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
+          [[ -z "${{ secrets.TEST_RIG_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_DEV_HOST"
+          [[ -z "${{ secrets.TEST_RIG_PROD_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_PROD_HOST"
+          [[ -z "${{ secrets.TN_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TN_DEV_HOST"
+          [[ -z "${{ secrets.TN_STAGING_HOST }}" ]] && missing_secrets="$missing_secrets TN_STAGING_HOST"
+          [[ -z "${{ secrets.ENV_FILE }}" ]] && missing_secrets="$missing_secrets ENV_FILE"
+          if [[ "${{ steps.vars.outputs.environment }}" == "tn-staging" && -z "${{ secrets.JUMPHOST }}" ]]; then
+            missing_secrets="$missing_secrets JUMPHOST"
+          fi
+          if [[ -n "$missing_secrets" ]]; then
+            echo "::error::Missing required secrets:$missing_secrets"
             exit 1
           fi
-          if [[ "${{ secrets.TEST_RIG_DEV_HOST }}" != *"@"* || "${{ secrets.TEST_RIG_PROD_HOST }}" != *"@"* || "${{ secrets.TN_DEV_HOST }}" != *"@"* || "${{ secrets.TN_STAGING_HOST }}" != *"@"* || "${{ secrets.JUMPHOST }}" != *"@"* ]]; then
-            echo "::error::Invalid host format (expected user@host)"
+          invalid_hosts=""
+          [[ "${{ secrets.TEST_RIG_DEV_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TEST_RIG_DEV_HOST"
+          [[ "${{ secrets.TEST_RIG_PROD_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TEST_RIG_PROD_HOST"
+          [[ "${{ secrets.TN_DEV_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_DEV_HOST"
+          [[ "${{ secrets.TN_STAGING_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_STAGING_HOST"
+          if [[ "${{ steps.vars.outputs.environment }}" == "tn-staging" && "${{ secrets.JUMPHOST }}" != *"@"* ]]; then
+            invalid_hosts="$invalid_hosts JUMPHOST"
+          fi
+          if [[ -n "$invalid_hosts" ]]; then
+            echo "::error::Invalid host format (expected user@host):$invalid_hosts"
             exit 1
           fi
 
