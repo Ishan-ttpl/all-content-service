@@ -231,12 +231,20 @@ jobs:
             docker network rm ai-network || true && \
             docker network create all-learner-ai-services-ai-network || true" || { echo "::error::Failed to clean Docker environment for $ENVIRONMENT"; exit 1; }
 
+      - name: Verify deploy.sh syntax
+        run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          TARGET_DIR="${{ env.target_dir }}"
+          cat deploy.sh
+          bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh for $ENVIRONMENT"; exit 1; }
+          rsync -avz -e "ssh -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/deploy.sh || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
+          ssh -F /tmp/ssh_config target "cat $TARGET_DIR/deploy.sh && bash -n $TARGET_DIR/deploy.sh" || { echo "::error::Syntax error in deploy.sh on target server for $ENVIRONMENT"; exit 1; }
+
       - name: Deploy or rollback
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           ACTION="${{ steps.vars.outputs.action }}"
           TARGET_DIR="${{ env.target_dir }}"
-          rsync -avz -e "ssh -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/deploy.sh || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
           if [[ "$ACTION" == "deploy" ]]; then
             BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
             ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $BRANCH deploy"
