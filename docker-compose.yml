@@ -1,7 +1,8 @@
 version: '3.8'
 services:
   content-service:
-    build: . # <-- This tells Docker Compose to BUILD from the current directory
+    build: .
+    image: all-content-service:latest
     container_name: content-service
     ports:
       - "3008:3008"
@@ -9,7 +10,8 @@ services:
     env_file:
       - .env
     networks:
-      - all-learner-ai-services-ai-network
+      - all-learner-ai-services_ai-network # <--- CHANGED HERE
+
 networks:
-  all-learner-ai-services-ai-network:
+  all-learner-ai-services_ai-network: # <--- CHANGED HERE
     driver: bridge
