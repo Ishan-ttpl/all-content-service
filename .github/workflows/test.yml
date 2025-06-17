@@ -84,7 +84,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # --- START: APT CACHING ADDED HERE ---
       - name: Cache apt packages
         uses: actions/cache@v4
         with:
@@ -94,7 +93,6 @@ jobs:
           key: ${{ runner.os }}-apt-${{ hashFiles('**/deploy.yml') }}
           restore-keys: |
             ${{ runner.os }}-apt-
-      # --- END: APT CACHING ADDED HERE ---
 
       - name: Install rsync and dos2unix (on GitHub Actions runner)
         run: |
@@ -205,7 +203,7 @@ jobs:
             ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
           else
             ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
-          fi # <-- ADDED THIS 'fi'
+          fi
 
       - name: Install dos2unix on target server (if needed for environment)
         run: |
@@ -271,7 +269,7 @@ jobs:
           if [[ "$ACTION" == "deploy" ]]; then
             BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
             ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $BRANCH deploy"
-          elif [[ "$ACTION" == "rollback" ]; then
+          elif [[ "$ACTION" == "rollback" ]]; then # <-- FIXED: Added missing ']' here
             ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
             if [[ -z "$ROLLBACK_TAG" ]]; then
               echo "::error::Rollback tag required for $ENVIRONMENT"
