@@ -37,6 +37,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync
+
       - name: Set up SSH keys and config
         run: |
           echo "${{ secrets.SSH_KEY }}" > id_rsa
@@ -61,8 +66,10 @@ jobs:
             exit 1
           fi
           echo "${{ secrets.ENV_FILE }}" > .env
-          SCP_COMMAND="scp -i id_rsa -o ProxyCommand='ssh -W %h:%p -i id_rsa $JUMP_HOST'"
-          $SCP_COMMAND .env $HOST:$TARGET_DIR/.env
+          chmod 600 .env
+          RSYNC_SSH="ssh -i id_rsa -o ProxyCommand='ssh -W %h:%p -i id_rsa $JUMP_HOST'"
+          rsync -avz -e "$RSYNC_SSH" .env $HOST:$TARGET_DIR/.env
+          rm -f .env id_rsa
 
       - name: Execute deploy or rollback
         run: |
