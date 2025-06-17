@@ -71,18 +71,25 @@ jobs:
           echo "${{ secrets.SSH_KEY }}" > id_rsa
           chmod 600 id_rsa
           ls -l id_rsa  # Debug: Verify file exists
+          ssh-keygen -l -f id_rsa  # Debug: Show key fingerprint
           mkdir -p ~/.ssh
           TN_STAGING_HOST="${{ secrets.TN_STAGING_HOST }}"
           JUMPHOST="${{ secrets.JUMPHOST }}"
           HOSTNAME="${TN_STAGING_HOST##*@}"
           USER="${TN_STAGING_HOST%%@*}"
-          echo -e "Host staging\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile $(pwd)/id_rsa\n  ProxyJump $JUMPHOST\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
+          JUMPHOST_USER="${JUMPHOST%%@*}"
+          JUMPHOST_HOST="${JUMPHOST##*@}"
+          echo -e "Host jumphost\n  HostName $JUMPHOST_HOST\n  User $JUMPHOST_USER\n  IdentityFile $(pwd)/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\nHost staging\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile $(pwd)/id_rsa\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
           chmod 600 ~/.ssh/config
           cat ~/.ssh/config  # Debug: Verify config
 
-      - name: Test SSH connectivity
+      - name: Test jump host connectivity
         run: |
-          ssh -F ~/.ssh/config staging "echo 'SSH connection successful'" || { echo "::error::SSH connection failed"; exit 1; }
+          ssh -vvv -F ~/.ssh/config jumphost "echo 'Jump host connection successful'" || { echo "::error::Jump host connection failed"; exit 1; }
+
+      - name: Test target host connectivity
+        run: |
+          ssh -vvv -F ~/.ssh/config staging "echo 'Target host connection successful'" || { echo "::error::Target host connection failed"; exit 1; }
 
       - name: Set target directory
         run: |
