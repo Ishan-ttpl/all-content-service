@@ -6,6 +6,8 @@ services:
     ports:
       - "3008:3008"
     restart: always
+    env_file:
+      - .env
     networks:
       - all-learner-ai-services-ai-network
 networks:
