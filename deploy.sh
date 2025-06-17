@@ -19,6 +19,8 @@ else
     echo "Error: Invalid action $ACTION. Expected 'deploy' or 'rollback'."
     exit 1
 fi
+echo "Removing existing content-service container..."
+docker rm -f content-service || echo "No content-service container to remove."
 echo "Stopping existing Docker containers..."
 docker-compose down || echo "No running containers to stop."
 echo "Building and starting new Docker containers..."
