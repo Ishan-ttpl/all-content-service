@@ -1,6 +1,10 @@
 name: Deploy or Rollback All-Content-Service
 
 on:
+  push:
+    tags:
+      - 'deploy-tn-staging-*'
+
   workflow_dispatch:
     inputs:
       action:
@@ -19,135 +23,87 @@ on:
         options:
           - tn-staging
       branch:
-        description: 'Branch to deploy (only for deploy)'
+        description: 'Branch to deploy (only for "deploy" action)'
         required: false
-        default: 'lais-v2.0'
       rollback_tag:
-        description: 'Tag to rollback to (only for rollback)'
+        description: 'Tag to rollback to (only for "rollback" action, e.g., deploy-tn-staging-v1.0.0)'
         required: false
 
 jobs:
   deploy-or-rollback:
     runs-on: ubuntu-latest
-    environment: tn-staging
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up SSH key # Only needed for SSH connection to jump host/target, not for Git ops now
-        run: |
-          echo "${{ secrets.SSH_KEY }}" > id_rsa
-          chmod 600 id_rsa
-          eval "$(ssh-agent -s)"
-          ssh-add id_rsa
-
-          mkdir -p ~/.ssh
-          echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > ~/.ssh/config
-          chmod 600 ~/.ssh/config
-
-      - name: Execute deploy or rollback
-        run: |
-          set -e
-
-          ACTION="${{ github.event.inputs.action }}"
-          BRANCH_INPUT="${{ github.event.inputs.branch }}"
-          ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
-          TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-          # Use the HTTPS URL with PAT for authentication
-          REPO_URL="https://Ishan-ttpl:${{ secrets.GH_PAT }}@github.com/Ishan-ttpl/all-content-service.git"
-
-          # Default branch
-          BRANCH="${BRANCH_INPUT:-lais-v2.0}"
-
-          # Define the SSH ProxyCommand value directly
-          PROXY_CMD_VALUE="ssh -i id_rsa -W %h:%p sudeepr@4.240.49.92"
-
-          # Construct the SSH command as an array for the remote connection
-          SSH_COMMAND_ARRAY=(
-            ssh
-            -o "ProxyCommand=$PROXY_CMD_VALUE"
-            -i id_rsa
-            all-staging-user@10.3.0.9
-          )
-
-          echo "Running action: $ACTION"
-
-          # Define the base remote command structure
-          REMOTE_COMMAND=""
-
-          if [[ "$ACTION" == "deploy" ]]; then
-            echo "Deploying branch $BRANCH to target server..."
-            REMOTE_COMMAND="
-              # Ensure the parent directory exists
-              mkdir -p \"$(dirname "$TARGET_DIR")\" && \
-              
-              # Check if the TARGET_DIR exists AND is a Git repository
-              if [ -d \"$TARGET_DIR\" ] && git -C \"$TARGET_DIR\" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-                echo \"Directory $TARGET_DIR is an existing Git repository. Updating...\"
-                cd \"$TARGET_DIR\" && \
-                git fetch --all && \
-                git checkout \"$BRANCH\" && \
-                git pull origin \"$BRANCH\"
-              elif [ -d \"$TARGET_DIR\" ]; then
-                echo \"Directory $TARGET_DIR exists but is NOT a Git repository. Cleaning and cloning...\"
-                # Remove existing content if it's not a valid repo
-                rm -rf \"$TARGET_DIR\"/* \"$TARGET_DIR\"/.* 2>/dev/null || true
-                git clone \"$REPO_URL\" \"$TARGET_DIR\" || { echo \"Error: Failed to clone repository ($REPO_URL). Check URL and PAT access.\"; exit 1; }
-                cd \"$TARGET_DIR\" # cd into the newly cloned directory
-              else
-                echo \"Directory $TARGET_DIR does not exist. Cloning fresh...\"
-                git clone \"$REPO_URL\" \"$TARGET_DIR\" || { echo \"Error: Failed to clone repository ($REPO_URL). Check URL and PAT access.\"; exit 1; }
-                cd \"$TARGET_DIR\" # cd into the newly cloned directory
-              fi && \
-              
-              # Execute deploy.sh (or fallback docker commands)
-              echo \"Executing deploy.sh on the remote server...\" && \
-              if [ -f \"./deploy.sh\" ]; then
-                bash ./deploy.sh \"$TARGET_DIR\" \"$BRANCH\" \"$ACTION\"
-              else
-                echo \"Error: deploy.sh not found in $TARGET_DIR. Running basic docker commands instead.\" && \
-                docker-compose down || true && \
-                docker-compose up -d --build && \
-                docker image prune -f || true
-              fi
-            "
-
-          elif [[ "$ACTION" == "rollback" ]]; then
-            if [[ -z "$ROLLBACK_TAG" ]]; then
-              echo '::error::Rollback tag is required'
-              exit 1
-            fi
-            echo "Rolling back to tag $ROLLBACK_TAG on target server..."
-            REMOTE_COMMAND="
-              # Ensure it's a Git repository before attempting rollback
-              if [ -d \"$TARGET_DIR\" ] && git -C \"$TARGET_DIR\" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-                echo \"Directory $TARGET_DIR is an existing Git repository. Rolling back...\"
-                cd \"$TARGET_DIR\" && \
-                git fetch --all --tags && \
-                git checkout \"tags/$ROLLBACK_TAG\"
-              else
-                echo \"Error: Target directory $TARGET_DIR is not a Git repository. Cannot perform rollback.\"
-                exit 1
-              fi && \
-              
-              # Execute deploy.sh (or fallback docker commands) after rollback
-              echo \"Executing deploy.sh after rollback on the remote server...\" && \
-              if [ -f \"./deploy.sh\" ]; then
-                bash ./deploy.sh \"$TARGET_DIR\" \"$ROLLBACK_TAG\" \"$ACTION\"
-              else
-                echo \"Error: deploy.sh not found in $TARGET_DIR. Running basic docker commands instead.\" && \
-                docker-compose down || true && \
-                docker-compose up -d --build && \
-                docker image prune -f || true
-              fi
-            "
+    - name: Determine environment and action
+      id: vars
+      run: |
+        ENVIRONMENT=""
+        ACTION=""
+        if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
+          TAG_PREFIX="${GITHUB_REF#refs/tags/deploy-}"
+          if [[ "$TAG_PREFIX" == "tn-staging"* ]]; then
+            ENVIRONMENT="tn-staging"
+            ACTION="deploy"
+            echo "Determined action: deploy via tag push to tn-staging environment."
           else
-            echo "::error::Invalid action: $ACTION"
+            echo "::error::Invalid deploy tag format. Expected 'deploy-tn-staging-*'."
             exit 1
           fi
+        else
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          ACTION="${{ github.event.inputs.action }}"
+          echo "Workflow dispatched: Action='$ACTION', Environment='$ENVIRONMENT'."
+        fi
+        echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+        echo "action=$ACTION" >> "$GITHUB_OUTPUT"
 
-          # Execute the constructed remote command
-          "${SSH_COMMAND_ARRAY[@]}" "$REMOTE_COMMAND"
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set SSH Key and Target Host
+      run: |
+        echo "${{ secrets.SSH_KEY }}" > key.pem
+        echo "${{ secrets.SSH_KEY }}" > jump_key.pem
+        chmod 600 key.pem jump_key.pem
+        echo "host=${{ secrets.TN_STAGING_HOST }}" >> "$GITHUB_ENV"
+        echo "target_dir=/home/all-staging-user/all-services/all-content-deploy" >> "$GITHUB_ENV"
+        echo "jump_host=${{ secrets.JUMPHOST }}" >> "$GITHUB_ENV"
+
+    - name: Create .env file on target server
+      run: |
+        HOST="${{ env.host }}"
+        JUMP_HOST="${{ env.jump_host }}"
+        TARGET_DIR="${{ env.target_dir }}"
+        SCP_COMMAND="scp -o StrictHostKeyChecking=no -i jump_key.pem -o ProxyJump=$JUMP_HOST -i key.pem"
+        echo "${{ secrets.ENV_FILE }}" > .env
+        $SCP_COMMAND .env $HOST:$TARGET_DIR/.env
+
+    - name: Perform Deploy or Rollback
+      run: |
+        ACTION="${{ steps.vars.outputs.action }}"
+        HOST="${{ env.host }}"
+        TARGET_DIR="${{ env.target_dir }}"
+        JUMP_HOST="${{ env.jump_host }}"
+        SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i jump_key.pem -J $JUMP_HOST -i key.pem $HOST"
+        SCP_COMMAND="scp -o StrictHostKeyChecking=no -i jump_key.pem -o ProxyJump=$JUMP_HOST -i key.pem"
+        if [[ "$ACTION" == "deploy" ]]; then
+          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+          echo "Initiating deployment to $HOST from branch: $BRANCH"
+          $SCP_COMMAND deploy.sh $HOST:/home/all-staging-user/deploy.sh
+          $SSH_COMMAND "chmod +x /home/all-staging-user/deploy.sh && /home/all-staging-user/deploy.sh $TARGET_DIR $BRANCH deploy"
+        elif [[ "$ACTION" == "rollback" ]]; then
+          ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+          if [[ -z "$ROLLBACK_TAG" ]]; then
+            echo "::error::Rollback tag is required for rollback action."
+            exit 1
+          fi
+          echo "Initiating rollback to tag: $ROLLBACK_TAG on $HOST"
+          $SCP_COMMAND deploy.sh $HOST:/home/all-staging-user/deploy.sh
+          $SSH_COMMAND "chmod +x /home/all-staging-user/deploy.sh && /home/all-staging-user/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback"
+        else
+          echo "::error::Invalid action specified: $ACTION"
+          exit 1
+        fi
