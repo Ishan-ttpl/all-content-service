@@ -3,9 +3,6 @@ name: Deploy or Rollback All-Content-Service
 on:
   push:
     tags:
-      - 'deploy-test-rig-dev-*'
-      - 'deploy-test-rig-prod-*'
-      - 'deploy-tn-dev-*'
       - 'deploy-tn-staging-*'
   workflow_dispatch:
     inputs:
@@ -20,12 +17,9 @@ on:
       environment:
         description: 'Target environment'
         required: true
-        default: 'test-rig-dev'
+        default: 'tn-staging'
         type: choice
         options:
-          - test-rig-dev
-          - test-rig-prod
-          - tn-dev
           - tn-staging
       branch:
         description: 'Branch to deploy (only for deploy)'
@@ -38,7 +32,7 @@ on:
 jobs:
   deploy-or-rollback:
     runs-on: ubuntu-22.04
-    environment: ${{ github.event.inputs.environment || 'test-rig-dev' }}
+    environment: ${{ github.event.inputs.environment || 'tn-staging' }}
 
     steps:
       - name: Determine environment and action
@@ -48,16 +42,10 @@ jobs:
           ACTION=""
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
             TAG_PREFIX="${GITHUB_REF#refs/tags/deploy-}"
-            if [[ "$TAG_PREFIX" == "test-rig-dev"* ]]; then
-              ENVIRONMENT="test-rig-dev"
-            elif [[ "$TAG_PREFIX" == "test-rig-prod"* ]]; then
-              ENVIRONMENT="test-rig-prod"
-            elif [[ "$TAG_PREFIX" == "tn-dev"* ]]; then
-              ENVIRONMENT="tn-dev"
-            elif [[ "$TAG_PREFIX" == "tn-staging"* ]]; then
+            if [[ "$TAG_PREFIX" == "tn-staging"* ]]; then
               ENVIRONMENT="tn-staging"
             else
-              echo "::error::Invalid tag format. Expected 'deploy-<env>-*'."
+              echo "::error::Invalid tag format. Expected 'deploy-tn-staging-*'."
               exit 1
             fi
             ACTION="deploy"
@@ -84,20 +72,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            /var/lib/apt/lists
-            /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-${{ hashFiles('**/deploy.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-
-
-      - name: Install rsync and dos2unix (on GitHub Actions runner)
+      - name: Install rsync
         run: |
           sudo apt-get update
-          sudo apt-get install -y rsync dos2unix
+          sudo apt-get install -y rsync
 
       - name: Validate secrets
         run: |
@@ -106,30 +84,10 @@ jobs:
           invalid_hosts=""
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
           [[ -z "${{ secrets.ENV_FILE }}" ]] && missing_secrets="$missing_secrets ENV_FILE"
-          case "$ENVIRONMENT" in
-            "test-rig-dev")
-              [[ -z "${{ secrets.TEST_RIG_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_DEV_HOST"
-              [[ "${{ secrets.TEST_RIG_DEV_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TEST_RIG_DEV_HOST"
-              ;;
-            "test-rig-prod")
-              [[ -z "${{ secrets.TEST_RIG_PROD_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_PROD_HOST"
-              [[ "${{ secrets.TEST_RIG_PROD_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TEST_RIG_PROD_HOST"
-              ;;
-            "tn-dev")
-              [[ -z "${{ secrets.TN_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TN_DEV_HOST"
-              [[ "${{ secrets.TN_DEV_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_DEV_HOST"
-              ;;
-            "tn-staging")
-              [[ -z "${{ secrets.TN_STAGING_HOST }}" ]] && missing_secrets="$missing_secrets TN_STAGING_HOST"
-              [[ -z "${{ secrets.JUMPHOST }}" ]] && missing_secrets="$missing_secrets JUMPHOST"
-              [[ "${{ secrets.TN_STAGING_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_STAGING_HOST"
-              [[ "${{ secrets.JUMPHOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts JUMPHOST"
-              ;;
-            *)
-              echo "::error::Unknown environment: $ENVIRONMENT"
-              exit 1
-              ;;
-          esac
+          [[ -z "${{ secrets.TN_STAGING_HOST }}" ]] && missing_secrets="$missing_secrets TN_STAGING_HOST"
+          [[ -z "${{ secrets.JUMPHOST }}" ]] && missing_secrets="$missing_secrets JUMPHOST"
+          [[ "${{ secrets.TN_STAGING_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_STAGING_HOST"
+          [[ "${{ secrets.JUMPHOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts JUMPHOST"
           if [[ -n "$missing_secrets" ]]; then
             echo "::error::Missing required secrets for $ENVIRONMENT:$missing_secrets"
             exit 1
@@ -145,72 +103,30 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > /tmp/id_rsa
           chmod 600 /tmp/id_rsa
-          ls -l /tmp/id_rsa
-          ssh-keygen -l -f /tmp/id_rsa
-          case "$ENVIRONMENT" in
-            "test-rig-dev")
-              HOST="${{ secrets.TEST_RIG_DEV_HOST }}"
-              TARGET_DIR="/home/sudeepr/git/all-content-service"
-              USER="${HOST%%@*}"
-              HOSTNAME="${HOST##*@}"
-              echo -e "Host target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > /tmp/ssh_config
-              ;;
-            "test-rig-prod")
-              HOST="${{ secrets.TEST_RIG_PROD_HOST }}"
-              TARGET_DIR="/home/sudeepr/all-services/all-content-service"
-              USER="${HOST%%@*}"
-              HOSTNAME="${HOST##*@}"
-              echo -e "Host target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > /tmp/ssh_config
-              ;;
-            "tn-dev")
-              HOST="${{ secrets.TN_DEV_HOST }}"
-              TARGET_DIR="/home/alldevuser/git/all-content-service"
-              USER="${HOST%%@*}"
-              HOSTNAME="${HOST##*@}"
-              echo -e "Host target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > /tmp/ssh_config
-              ;;
-            "tn-staging")
-              HOST="${{ secrets.TN_STAGING_HOST }}"
-              JUMPHOST="${{ secrets.JUMPHOST }}"
-              TARGET_DIR="/home/all-staging-user/all-services/all-content-deploy"
-              USER="${HOST%%@*}"
-              HOSTNAME="${HOST##*@}"
-              JUMPHOST_USER="${JUMPHOST%%@*}"
-              JUMPHOST_HOST="${JUMPHOST##*@}"
-              echo -e "Host jumphost\n  HostName $JUMPHOST_HOST\n  User $JUMPHOST_USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\nHost target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > /tmp/ssh_config
-              ;;
-            *)
-              echo "::error::Unknown environment: $ENVIRONMENT"
-              exit 1
-              ;;
-          esac
+          ls -l /tmp/id_rsa  # Debug: Verify file exists
+          ssh-keygen -l -f /tmp/id_rsa  # Debug: Show key fingerprint
+          HOST="${{ secrets.TN_STAGING_HOST }}"
+          JUMPHOST="${{ secrets.JUMPHOST }}"
+          TARGET_DIR="/srv/services/all-content-service"
+          USER="${HOST%%@*}"
+          HOSTNAME="${HOST##*@}"
+          JUMPHOST_USER="${JUMPHOST%%@*}"
+          JUMPHOST_HOST="${JUMPHOST##*@}"
+          echo -e "Host jumphost\n  HostName $JUMPHOST_HOST\n  User $JUMPHOST_USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\nHost target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null" > /tmp/ssh_config
           chmod 600 /tmp/ssh_config
-          ls -l /tmp/ssh_config
-          cat /tmp/ssh_config
+          ls -l /tmp/ssh_config  # Debug: Verify file exists
+          cat /tmp/ssh_config  # Debug: Verify config
           echo "remote_user=$USER" >> "$GITHUB_ENV"
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
           ssh-keyscan -H $HOSTNAME >> ~/.ssh/known_hosts 2>/dev/null || true
-          if [[ -n "$JUMPHOST" ]]; then
-            ssh-keyscan -H $JUMPHOST_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          cat ~/.ssh/known_hosts
+          ssh-keyscan -H $JUMPHOST_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+          cat ~/.ssh/known_hosts  # Debug: Show known_hosts
 
       - name: Test host connectivity
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
-            ssh -vvv -F /tmp/ssh_config jumphost "echo 'Jump host connection successful'" || { echo "::error::Jump host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
-            ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
-          else
-            ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
-          fi
-
-      - name: Install dos2unix on target server (if needed for environment)
-        run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
-            ssh -F /tmp/ssh_config target "sudo apt-get update && sudo apt-get install -y dos2unix" || { echo "::warning::Failed to install dos2unix on target server for $ENVIRONMENT. This might cause issues. Ensure the SSH user has sudo privileges without a password for this command."; }
-          fi
+          ssh -vvv -F /tmp/ssh_config jumphost "echo 'Jump host connection successful'" || { echo "::error::Jump host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
+          ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
 
       - name: Create and transfer .env file
         run: |
@@ -218,64 +134,27 @@ jobs:
           TARGET_DIR="${{ env.target_dir }}"
           echo "${{ secrets.ENV_FILE }}" > .env
           chmod 600 .env
-          ls -l .env
+          ls -l .env  # Debug: Verify .env exists
           rsync -avz -e "ssh -vvv -F /tmp/ssh_config" .env target:$TARGET_DIR/.env || { echo "::error::Failed to rsync .env file for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
           ssh -F /tmp/ssh_config target "ls -l $TARGET_DIR/.env" || { echo "::error::Failed to verify .env on target server for $ENVIRONMENT"; exit 1; }
           rm -f .env
-
-      - name: Verify docker-compose.yml on server
-        run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          ssh -F /tmp/ssh_config target "cat $TARGET_DIR/docker-compose.yml" || { echo "::error::Failed to verify docker-compose.yml for $ENVIRONMENT"; exit 1; }
-
-      - name: Clean up Git working directory
-        run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          ssh -F /tmp/ssh_config target "cd $TARGET_DIR && \
-            git stash --include-untracked || true && \
-            git reset --hard || true && \
-            git clean -fd || true" || { echo "::error::Failed to clean Git working directory for $ENVIRONMENT"; exit 1; }
-
-      - name: Clean up Docker environment
-        run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          ssh -F /tmp/ssh_config target "cd $TARGET_DIR && \
-            docker-compose down --remove-orphans || true && \
-            docker rm -f content-service || true && \
-            docker network rm ai-network || true && \
-            docker network create all-learner-ai-services-ai-network || true" || { echo "::error::Failed to clean Docker environment for $ENVIRONMENT"; exit 1; }
-
-      - name: Verify deploy.sh syntax
-        run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          dos2unix deploy.sh # This converts the script on the GitHub Actions runner
-          cat deploy.sh
-          wc -l deploy.sh
-          od -c deploy.sh | head -n 10
-          bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh locally for $ENVIRONMENT"; exit 1; }
-          rsync -avz -e "ssh -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/deploy.sh || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
-          # Now, dos2unix on the target server should succeed because it's installed
-          ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/deploy.sh && cat $TARGET_DIR/deploy.sh && wc -l $TARGET_DIR/deploy.sh && od -c $TARGET_DIR/deploy.sh | head -n 10 && bash -n $TARGET_DIR/deploy.sh" || { echo "::error::Syntax error in deploy.sh on target server for $ENVIRONMENT"; exit 1; }
 
       - name: Deploy or rollback
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           ACTION="${{ steps.vars.outputs.action }}"
           TARGET_DIR="${{ env.target_dir }}"
+          rsync -avz -e "ssh -F /tmp/ssh_config" scripts/deploy.sh target:/home/${{ env.remote_user }}/deploy.sh || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
           if [[ "$ACTION" == "deploy" ]]; then
             BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-            ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $BRANCH deploy"
-          elif [[ "$ACTION" == "rollback" ]]; then # <-- FIXED: Added missing ']' here
+            ssh -F /tmp/ssh_config target "chmod +x /home/${{ env.remote_user }}/deploy.sh && /home/${{ env.remote_user }}/deploy.sh $TARGET_DIR $BRANCH deploy"
+          elif [[ "$ACTION" == "rollback" ]]; then
             ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
             if [[ -z "$ROLLBACK_TAG" ]]; then
               echo "::error::Rollback tag required for $ENVIRONMENT"
               exit 1
             fi
-            ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback"
+            ssh -F /tmp/ssh_config target "chmod +x /home/${{ env.remote_user }}/deploy.sh && /home/${{ env.remote_user }}/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback"
           else
             echo "::error::Invalid action: $ACTION for $ENVIRONMENT"
             exit 1
@@ -285,6 +164,19 @@ jobs:
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           ssh -F /tmp/ssh_config target "docker logs content-service || echo 'Failed to get container logs for $ENVIRONMENT'"
+
+      - name: Notify Slack
+        if: always()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel-id: 'deployments'
+          text: |
+            ${{ job.status == 'success' && ':white_check_mark:' || ':x:' }} Deployment ${{ job.status == 'success' && 'Succeeded' || 'Failed' }} for all-content-service
+            *Environment:* ${{ github.event.inputs.environment }}
+            *Action:* ${{ github.event.inputs.action }}
+            *Ref:* ${{ github.ref_name }}
+            *Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>
 
       - name: Cleanup temporary files
         if: always()
