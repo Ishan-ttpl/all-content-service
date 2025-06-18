@@ -84,6 +84,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify repository structure
+        run: |
+          ls -R
+          if [[ ! -f scripts/deploy.sh ]]; then
+            echo "::error::scripts/deploy.sh not found in repository"
+            exit 1
+          fi
+
       - name: Cache apt packages
         uses: actions/cache@v4
         with:
@@ -308,7 +316,7 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "cd $TARGET_DIR && docker-compose down --remove-orphans || true && docker rm -f all-content-service || true && docker network rm ai-network || true && docker network create all-content-service-ai-network || true" && break
+            ssh -F /tmp/ssh_config target "cd $TARGET_DIR/docker && docker-compose down --remove-orphans || true && docker rm -f content-service || true" && break
             echo "Docker cleanup attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to clean Docker environment for $ENVIRONMENT"; exit 1; }
@@ -361,7 +369,7 @@ jobs:
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "docker logs all-content-service || echo 'Failed to get container logs for $ENVIRONMENT'" && break
+            ssh -F /tmp/ssh_config target "docker logs content-service || echo 'Failed to get container logs for $ENVIRONMENT'" && break
             echo "Verify container logs attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to verify container logs for $ENVIRONMENT"; exit 1; }
