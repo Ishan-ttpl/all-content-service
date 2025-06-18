@@ -42,11 +42,10 @@ jobs:
 
     strategy:
       matrix:
-        service: 
+        service:
           - all-content-service
           - all-learner-ai-services
           - all-orchestration-service
-          - all-learner-text-eval
 
     steps:
       - name: Determine environment and action
@@ -104,10 +103,8 @@ jobs:
           SERVICE="${{ matrix.service }}"
           missing_secrets=""
           invalid_hosts=""
-          # Common secrets
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
-          [[ -z "${{ secrets[format('ENV_FILE_{0}', env.SERVICE)] }}" ]] && missing_secrets="$missing_secrets ENV_FILE_$SERVICE"
-          # Environment-specific secrets
+          [[ -z "${{ secrets.ENV_FILE }}" ]] && missing_secrets="$missing_secrets ENV_FILE"
           case "$ENVIRONMENT" in
             "test-rig-dev")
               [[ -z "${{ secrets.TEST_RIG_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_DEV_HOST"
@@ -124,6 +121,7 @@ jobs:
             "tn-staging")
               [[ -z "${{ secrets.TN_STAGING_HOST }}" ]] && missing_secrets="$missing_secrets TN_STAGING_HOST"
               [[ -z "${{ secrets.JUMPHOST }}" ]] && missing_secrets="$missing_secrets JUMPHOST"
+              [[ -z "${{ secrets.SLACK_BOT_TOKEN }}" ]] && missing_secrets="$missing_secrets SLACK_BOT_TOKEN"
               [[ "${{ secrets.TN_STAGING_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_STAGING_HOST"
               [[ "${{ secrets.JUMPHOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts JUMPHOST"
               ;;
@@ -214,7 +212,7 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           SERVICE="${{ matrix.service }}"
           TARGET_DIR="${{ env.target_dir }}"
-          echo "${{ secrets[format('ENV_FILE_{0}', env.SERVICE)] }}" > .env
+          echo "${{ secrets.ENV_FILE }}" > .env
           chmod 600 .env
           ls -l .env  # Debug: Verify .env exists
           rsync -avz -e "ssh -vvv -F /tmp/ssh_config" .env target:$TARGET_DIR/.env || { echo "::error::Failed to rsync .env file for $ENVIRONMENT, $SERVICE"; cat /tmp/ssh_config; exit 1; }
