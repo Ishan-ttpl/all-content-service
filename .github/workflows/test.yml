@@ -131,7 +131,7 @@ jobs:
             "tn-staging")
               [[ -z "${{ secrets.TN_STAGING_HOST }}" ]] && missing_secrets="$missing_secrets TN_STAGING_HOST"
               [[ -z "${{ secrets.JUMPHOST }}" ]] && missing_secrets="$missing_secrets JUMPHOST"
-              [[ -z "${{ secrets.SLACK_BOT_TOKEN }}" ]] && missing_secrets="$missing_secrets SLACK_BOT_TOKEN"
+              [[ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]] && missing_secrets="$missing_secrets SLACK_WEBHOOK_URL"
               [[ "${{ secrets.TN_STAGING_HOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts TN_STAGING_HOST"
               [[ "${{ secrets.JUMPHOST }}" != *"@"* ]] && invalid_hosts="$invalid_hosts JUMPHOST"
               ;;
@@ -191,7 +191,7 @@ jobs:
             "tn-staging")
               HOST="${{ secrets.TN_STAGING_HOST }}"
               JUMPHOST="${{ secrets.JUMPHOST }}"
-              TARGET_DIR="/srv/services/$SERVICE"
+              TARGET_DIR="/home/deployment/all-services/$SERVICE"
               USER="${HOST%%@*}"
               HOSTNAME="${HOST##*@}"
               JUMPHOST_USER="${JUMPHOST%%@*}"
@@ -219,13 +219,10 @@ jobs:
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           SERVICE="${{ matrix.service }}"
-          # Create .ssh directory and set permissions
           ssh -F /tmp/ssh_config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh" || { echo "::error::Failed to create .ssh directory for $ENVIRONMENT, $SERVICE"; exit 1; }
-          # Append public key to authorized_keys
           echo "${{ env.public_key }}" > /tmp/id_rsa.pub
           rsync -avz --timeout=30 -e "ssh -vvv -F /tmp/ssh_config" /tmp/id_rsa.pub target:~/.ssh/id_rsa.pub || { echo "::error::Failed to rsync public key for $ENVIRONMENT, $SERVICE"; exit 1; }
           ssh -F /tmp/ssh_config target "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || { echo "::error::Failed to update authorized_keys for $ENVIRONMENT, $SERVICE"; exit 1; }
-          # Verify authorized_keys
           ssh -F /tmp/ssh_config target "cat ~/.ssh/authorized_keys" || { echo "::error::Failed to verify authorized_keys for $ENVIRONMENT, $SERVICE"; exit 1; }
 
       - name: Test host connectivity
@@ -267,7 +264,7 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           SERVICE="${{ matrix.service }}"
           TARGET_DIR="${{ env.target_dir }}"
-          ssh -F /tmp/ssh_config target "cat $TARGET_DIR/docker-compose.yml" || { echo "::error::Failed to verify docker-compose.yml for $ENVIRONMENT, $SERVICE"; exit 1; }
+          ssh -F /tmp/ssh_config target "cat $TARGET_DIR/docker/docker-compose.yml" || { echo "::error::Failed to verify docker-compose.yml for $ENVIRONMENT, $SERVICE"; exit 1; }
 
       - name: Clean up Git working directory
         run: |
@@ -325,16 +322,12 @@ jobs:
 
       - name: Notify Slack
         if: always()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
-          channel-id: 'deployments'
-          text: |
-            ${{ job.status == 'success' && ':white_check_mark:' || ':x:' }} Deployment ${{ job.status == 'success' && 'Succeeded' || 'Failed' }} for ${{ matrix.service }}
-            *Environment:* ${{ github.event.inputs.environment }}
-            *Action:* ${{ github.event.inputs.action }}
-            *Ref:* ${{ github.ref_name }}
-            *Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>
+        run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          SERVICE="${{ matrix.service }}"
+          STATUS="${{ job.status == 'success' && 'Succeeded' || 'Failed' }}"
+          EMOJI="${{ job.status == 'success' && ':white_check_mark:' || ':x:' }}"
+          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$EMOJI Deployment $STATUS for $SERVICE\n*Environment:* $ENVIRONMENT\n*Action:* ${{ github.event.inputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
 
       - name: Cleanup temporary files
         if: always()
