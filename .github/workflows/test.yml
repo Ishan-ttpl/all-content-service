@@ -87,8 +87,12 @@ jobs:
       - name: Verify repository structure
         run: |
           ls -R
-          if [[ ! -f deploy.sh ]]; then
-            echo "::error::deploy.sh not found in repository"
+          if [[ ! -f scripts/deploy.sh ]]; then
+            echo "::error::scripts/deploy.sh not found in repository"
+            exit 1
+          fi
+          if [[ ! -f docker/docker-compose.yml ]]; then
+            echo "::error::docker/docker-compose.yml not found in repository"
             exit 1
           fi
 
@@ -296,7 +300,7 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "cat $TARGET_DIR/docker/docker-compose.yml" && break
+            ssh -F /tmp/ssh_config target "ls -la $TARGET_DIR/docker/ && cat $TARGET_DIR/docker/docker-compose.yml && docker-compose -f $TARGET_DIR/docker/docker-compose.yml config" && break
             echo "Verify docker-compose.yml attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to verify docker-compose.yml for $ENVIRONMENT"; exit 1; }
@@ -306,7 +310,7 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "cd $TARGET_DIR && git stash --include-untracked || true && git reset --hard || true && git clean -fd || true" && break
+            ssh -F /tmp/ssh_config target "cd $TARGET_DIR && ls -la && git status && git stash --include-untracked || true && git reset --hard || true && git clean -fd || true" && break
             echo "Git cleanup attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to clean Git working directory for $ENVIRONMENT"; exit 1; }
@@ -316,7 +320,7 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "cd $TARGET_DIR/docker && docker-compose down --remove-orphans || true && docker rm -f content-service || true" && break
+            ssh -F /tmp/ssh_config target "cd $TARGET_DIR/docker && docker-compose down --remove-orphans || true && docker rm -f content-service || true && docker ps -a && docker images" && break
             echo "Docker cleanup attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to clean Docker environment for $ENVIRONMENT"; exit 1; }
@@ -325,13 +329,13 @@ jobs:
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
-          dos2unix deploy.sh
-          cat deploy.sh
-          wc -l deploy.sh
-          od -c deploy.sh | head -n 10
-          bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh locally for $ENVIRONMENT"; exit 1; }
+          dos2unix scripts/deploy.sh
+          cat scripts/deploy.sh
+          wc -l scripts/deploy.sh
+          od -c scripts/deploy.sh | head -n 10
+          bash -n scripts/deploy.sh || { echo "::error::Syntax error in deploy.sh locally for $ENVIRONMENT"; exit 1; }
           for attempt in {1..5}; do
-            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/scripts/deploy.sh && break
+            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" scripts/deploy.sh target:$TARGET_DIR/scripts/deploy.sh && break
             echo "Rsync deploy.sh attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
@@ -349,14 +353,14 @@ jobs:
           for attempt in {1..5}; do
             if [[ "$ACTION" == "deploy" ]]; then
               BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/scripts/deploy.sh && $TARGET_DIR/scripts/deploy.sh $TARGET_DIR $BRANCH deploy" && break
+              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/scripts/deploy.sh && $TARGET_DIR/scripts/deploy.sh $TARGET_DIR $BRANCH deploy && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
             elif [[ "$ACTION" == "rollback" ]]; then
               ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
               if [[ -z "$ROLLBACK_TAG" ]]; then
                 echo "::error::Rollback tag required for $ENVIRONMENT"
                 exit 1
               fi
-              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/scripts/deploy.sh && $TARGET_DIR/scripts/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback" && break
+              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/scripts/deploy.sh && $TARGET_DIR/scripts/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
             else
               echo "::error::Invalid action: $ACTION for $ENVIRONMENT"
               exit 1
