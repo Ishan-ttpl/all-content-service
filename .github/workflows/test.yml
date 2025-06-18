@@ -87,12 +87,12 @@ jobs:
       - name: Verify repository structure
         run: |
           ls -R
-          if [[ ! -f scripts/deploy.sh ]]; then
-            echo "::error::scripts/deploy.sh not found in repository"
+          if [[ ! -f deploy.sh ]]; then
+            echo "::error::deploy.sh not found in repository"
             exit 1
           fi
-          if [[ ! -f docker/docker-compose.yml ]]; then
-            echo "::error::docker/docker-compose.yml not found in repository"
+          if [[ ! -f docker-compose.yml ]]; then
+            echo "::error::docker-compose.yml not found in repository"
             exit 1
           fi
 
@@ -329,13 +329,13 @@ jobs:
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
-          dos2unix scripts/deploy.sh
-          cat scripts/deploy.sh
-          wc -l scripts/deploy.sh
-          od -c scripts/deploy.sh | head -n 10
-          bash -n scripts/deploy.sh || { echo "::error::Syntax error in deploy.sh locally for $ENVIRONMENT"; exit 1; }
+          dos2unix deploy.sh
+          cat deploy.sh
+          wc -l deploy.sh
+          od -c deploy.sh | head -n 10
+          bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh locally for $ENVIRONMENT"; exit 1; }
           for attempt in {1..5}; do
-            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" scripts/deploy.sh target:$TARGET_DIR/scripts/deploy.sh && break
+            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/scripts/deploy.sh && break
             echo "Rsync deploy.sh attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
