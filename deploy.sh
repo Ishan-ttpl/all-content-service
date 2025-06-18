@@ -18,19 +18,32 @@ echo "Deploying to $TARGET_DIR with $BRANCH_OR_TAG for action $ACTION"
 
 cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
 
+# Verify .git directory
+if [ ! -d ".git" ]; then
+  echo "Error: .git directory not found in $TARGET_DIR"
+  exit 1
+fi
+
 echo "Cleaning up old Docker environment..."
+cd "$TARGET_DIR/docker" || { echo "Failed to cd to $TARGET_DIR/docker"; exit 1; }
 docker-compose down --remove-orphans || true
 docker rm -f content-service || true
-docker network rm ai-network || true
-docker network create all-learner-ai-services-ai-network || true
+docker ps -a
+docker images
 
 echo "Checking docker-compose.yml..."
+if [ ! -f "docker-compose.yml" ]; then
+  echo "Error: docker-compose.yml not found in $TARGET_DIR/docker"
+  exit 1
+fi
 cat docker-compose.yml
 
 echo "Cleaning up Git working directory..."
+cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
 git stash --include-untracked || true
 git reset --hard || true
 git clean -fd || true
+git status
 
 if [ "$ACTION" = "deploy" ]; then
   echo "Deploying branch $BRANCH_OR_TAG..."
@@ -43,19 +56,25 @@ if [ "$ACTION" = "deploy" ]; then
   git reset --hard "origin/$BRANCH_OR_TAG" || { echo "Failed to reset to origin/$BRANCH_OR_TAG"; exit 1; }
   git clean -fd || { echo "Failed to clean"; exit 1; }
   git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull from origin $BRANCH_OR_TAG"; exit 1; }
+  git log -n 1
 elif [ "$ACTION" = "rollback" ]; then
   echo "Rolling back to tag $BRANCH_OR_TAG..."
   git fetch --all --tags || { echo "Failed to fetch tags"; exit 1; }
   git checkout "tags/$BRANCH_OR_TAG" || { echo "Failed to checkout tag $BRANCH_OR_TAG"; exit 1; }
   git reset --hard "tags/$BRANCH_OR_TAG" || { echo "Failed to reset to tags/$BRANCH_OR_TAG"; exit 1; }
   git clean -fd || { echo "Failed to clean"; exit 1; }
+  git log -n 1
 else
   echo "Error: Invalid action $ACTION"
   exit 1
 fi
 
 echo "Building and starting services..."
+cd "$TARGET_DIR/docker" || { echo "Failed to cd to $TARGET_DIR/docker"; exit 1; }
+docker-compose config || { echo "Error: Invalid docker-compose.yml"; exit 1; }
 docker-compose pull || { echo "Error: Failed to pull images"; exit 1; }
 docker-compose up -d --build || { echo "Error: Failed to start services"; exit 1; }
+docker ps -a
+docker logs content-service || echo "No logs available"
 
 echo "Deployment complete."
