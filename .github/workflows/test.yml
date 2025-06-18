@@ -46,8 +46,24 @@ jobs:
           - all-content-service
           - all-learner-ai-services
           - all-orchestration-service
+        include:
+          - environment: tn-staging
+            service: all-content-service
+            deploy: true
+          - environment: tn-staging
+            service: all-learner-ai-services
+            deploy: false
+          - environment: tn-staging
+            service: all-orchestration-service
+            deploy: false
 
     steps:
+      - name: Skip non-applicable services
+        if: matrix.deploy == false
+        run: |
+          echo "Skipping deployment of ${{ matrix.service }} for ${{ steps.vars.outputs.environment }} as it is hosted on a different server."
+          exit 0
+
       - name: Determine environment and action
         id: vars
         run: |
@@ -83,6 +99,7 @@ jobs:
           echo "branch: ${{ github.event.inputs.branch }}"
           echo "rollback_tag: ${{ github.event.inputs.rollback_tag }}"
           echo "service: ${{ matrix.service }}"
+          echo "deploy: ${{ matrix.deploy }}"
           echo "runner: $RUNNER_OS, $RUNNER_NAME"
           echo "event_name: ${{ github.event_name }}"
           echo "ref: ${{ github.ref }}"
@@ -215,7 +232,7 @@ jobs:
           cat ~/.ssh/known_hosts
 
       - name: Setup SSH key on target for tn-staging
-        if: matrix.environment == 'tn-staging'
+        if: matrix.environment == 'tn-staging' && matrix.deploy == true
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           SERVICE="${{ matrix.service }}"
@@ -223,21 +240,29 @@ jobs:
           echo "${{ env.public_key }}" > /tmp/id_rsa.pub
           rsync -avz --timeout=30 -e "ssh -vvv -F /tmp/ssh_config" /tmp/id_rsa.pub target:~/.ssh/id_rsa.pub || { echo "::error::Failed to rsync public key for $ENVIRONMENT, $SERVICE"; exit 1; }
           ssh -F /tmp/ssh_config target "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || { echo "::error::Failed to update authorized_keys for $ENVIRONMENT, $SERVICE"; exit 1; }
-          ssh -F /tmp/ssh_config target "cat ~/.ssh/authorized_keys" || { echo "::error::Failed to verify authorized_keys for $ENVIRONMENT, $SERVICE"; exit 1; }
+          ssh -F /tmp/ssh_config target "ls -ld ~ ~/.ssh ~/.ssh/authorized_keys && cat ~/.ssh/authorized_keys" || { echo "::error::Failed to verify authorized_keys for $ENVIRONMENT, $SERVICE"; exit 1; }
 
       - name: Test host connectivity
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           SERVICE="${{ matrix.service }}"
           if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
-            ssh -vvv -F /tmp/ssh_config jumphost "echo 'Jump host connection successful for $SERVICE'" || { echo "::error::Jump host connection failed for $ENVIRONMENT, $SERVICE"; cat /tmp/ssh_config; exit 1; }
-            ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful for $SERVICE'" || { echo "::error::Target host connection failed for $ENVIRONMENT, $SERVICE"; cat /tmp/ssh_config; exit 1; }
+            for attempt in {1..3}; do
+              ssh -vvv -F /tmp/ssh_config jumphost "echo 'Jump host connection successful for $SERVICE'" && break
+              echo "Jump host attempt $attempt failed, retrying in 5 seconds..."
+              sleep 5
+            done || { echo "::error::Jump host connection failed for $ENVIRONMENT, $SERVICE"; cat /tmp/ssh_config; exit 1; }
+            for attempt in {1..3}; do
+              ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful for $SERVICE'" && break
+              echo "Target host attempt $attempt failed, retrying in 5 seconds..."
+              sleep 5
+            done || { echo "::error::Target host connection failed for $ENVIRONMENT, $SERVICE"; cat /tmp/ssh_config; exit 1; }
           else
             ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful for $SERVICE'" || { echo "::error::Target host connection failed for $ENVIRONMENT, $SERVICE"; cat /tmp/ssh_config; exit 1; }
           fi
 
       - name: Install dos2unix on target server
-        if: matrix.environment == 'tn-staging'
+        if: matrix.environment == 'tn-staging' && matrix.deploy == true
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           SERVICE="${{ matrix.service }}"
