@@ -53,6 +53,13 @@ fi
 cp "$TARGET_DIR/docker-compose.yml" "$TARGET_DIR/docker/docker-compose.yml" || { echo "Failed to copy docker-compose.yml"; exit 1; }
 cat docker-compose.yml
 
+echo "Checking .env file..."
+if [ ! -f "$TARGET_DIR/.env" ]; then
+  echo "Warning: .env file not found in $TARGET_DIR, may cause issues"
+else
+  ls -l "$TARGET_DIR/.env"
+fi
+
 echo "Cleaning up Git working directory..."
 cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
 git config --global --add safe.directory "$TARGET_DIR" || { echo "Failed to add safe.directory"; exit 1; }
