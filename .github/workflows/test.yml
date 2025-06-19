@@ -102,6 +102,16 @@ jobs:
           missing_secrets=""
           invalid_hosts=""
 
+          # Debug: List all available secrets
+          echo "Available secrets:"
+          echo "DEPLOY_SCRIPT_CONTENT: ${${{ secrets.DEPLOY_SCRIPT_CONTENT }}:+present}"
+          echo "DOCKER_COMPOSE_CONTENT: ${${{ secrets.DOCKER_COMPOSE_CONTENT }}:+present}"
+          echo "SSH_KEY: ${${{ secrets.SSH_KEY }}:+present}"
+          echo "ENV_FILE: ${${{ secrets.ENV_FILE }}:+present}"
+          echo "TN_STAGING_HOST: ${${{ secrets.TN_STAGING_HOST }}:+present}"
+          echo "JUMPHOST: ${${{ secrets.JUMPHOST }}:+present}"
+          echo "SLACK_WEBHOOK_URL: ${${{ secrets.SLACK_WEBHOOK_URL }}:+present}"
+
           [[ -z "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" ]] && missing_secrets="$missing_secrets DEPLOY_SCRIPT_CONTENT"
           [[ -z "${{ secrets.DOCKER_COMPOSE_CONTENT }}" ]] && missing_secrets="$missing_secrets DOCKER_COMPOSE_CONTENT"
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
