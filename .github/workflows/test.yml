@@ -198,6 +198,7 @@ jobs:
               JUMPHOST_USER="${JUMPHOST%%@*}"
               JUMPHOST_HOST="${JUMPHOST##*@}"
 
+              # IMPORTANT: The 'EOL' below must align with the 'cat' command's starting column.
               cat > ~/.ssh/config << EOL
 Host jumphost
   HostName ${JUMPHOST_HOST}
@@ -225,6 +226,7 @@ EOL
 
           # For environments without a jump host (only if not tn-staging)
           if [[ "$ENVIRONMENT" != "tn-staging" ]]; then
+            # IMPORTANT: The 'EOL' below must align with the 'cat' command's starting column.
             cat > ~/.ssh/config << EOL
 Host target
   HostName ${HOSTNAME}
