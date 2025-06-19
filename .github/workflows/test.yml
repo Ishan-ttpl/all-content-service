@@ -14,7 +14,7 @@ on:
         required: true
         default: 'deploy'
         type: choice
-        options: # <--- Corrected: options directly under 'action'
+        options:
           - deploy
           - rollback
       environment:
@@ -22,7 +22,7 @@ on:
         required: true
         default: 'tn-staging'
         type: choice
-        options: # <--- Corrected: options directly under 'environment'
+        options:
           - test-rig-dev
           - test-rig-prod
           - tn-dev
@@ -31,16 +31,14 @@ on:
         description: 'Branch to deploy (only for deploy)'
         required: false
         default: 'main'
-        type: string # Added type: string, good practice for text inputs
       rollback_tag:
         description: 'Tag to rollback to (only for rollback)'
         required: false
-        type: string # Added type: string
 
 jobs:
   deploy-or-rollback:
     runs-on: ubuntu-22.04
-    environment: ${{ github.event.inputs.environment || 'tn-staging' }}
+    environment: ${{ github.event.inputs.environment }}
 
     steps:
       - name: Determine environment and action
@@ -49,11 +47,11 @@ jobs:
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
             TAG_PREFIX="${GITHUB_REF#refs/tags/deploy-}"
             case "$TAG_PREFIX" in
-              test-rig-dev*) ENVIRONMENT="test-rig-dev";;
-              test-rig-prod*) ENVIRONMENT="test-rig-prod";;
-              tn-dev*) ENVIRONMENT="tn-dev";;
-              tn-staging*) ENVIRONMENT="tn-staging";;
-              *) echo "::error::Invalid tag format"; exit 1;;
+              test-rig-dev*) ENVIRONMENT="test-rig-dev" ;;
+              test-rig-prod*) ENVIRONMENT="test-rig-prod" ;;
+              tn-dev*) ENVIRONMENT="tn-dev" ;;
+              tn-staging*) ENVIRONMENT="tn-staging" ;;
+              *) echo "::error::Invalid tag format"; exit 1 ;;
             esac
             ACTION="deploy"
           else
@@ -74,15 +72,16 @@ jobs:
           [ ! -f "deploy.sh" ] && { echo "::error::deploy.sh not found"; exit 1; }
           [ ! -f "docker-compose.yml" ] && { echo "::error::docker-compose.yml not found"; exit 1; }
 
-      - name: Setup SSH
+      - name: Setup SSH config and determine host
+        id: ssh
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > /tmp/id_rsa
           chmod 600 /tmp/id_rsa
           ssh-keygen -y -f /tmp/id_rsa > /tmp/id_rsa.pub
-          echo "public_key=$(cat /tmp/id_rsa.pub)" >> $GITHUB_ENV
 
-          case "${{ steps.vars.outputs.environment }}" in
+          ENV="${{ steps.vars.outputs.environment }}"
+          case "$ENV" in
             test-rig-dev)
               HOST="${{ secrets.TEST_RIG_DEV_HOST }}"
               TARGET_DIR="/home/sudeepr/git/all-content-service"
@@ -99,70 +98,71 @@ jobs:
               HOST="${{ secrets.TN_STAGING_HOST }}"
               JUMPHOST="${{ secrets.JUMPHOST }}"
               TARGET_DIR="/home/deployment/all-services/all-content-service"
-              JUMPHOST_USER="${JUMPHOST%%@*}"
-              JUMPHOST_HOST="${JUMPHOST##*@}"
               ;;
+            *)
+              echo "::error::Unknown environment"; exit 1 ;;
           esac
 
           USER="${HOST%%@*}"
           HOSTNAME="${HOST##*@}"
-          
-          if [[ "${{ steps.vars.outputs.environment }}" == "tn-staging" ]]; then
-            cat <<EOF > /tmp/ssh_config
-Host jumphost
-  HostName $JUMPHOST_HOST
-  User $JUMPHOST_USER
-  IdentityFile /tmp/id_rsa
-  StrictHostKeyChecking no
-Host target
-  HostName $HOSTNAME
-  User $USER
-  IdentityFile /tmp/id_rsa
-  ProxyJump jumphost
-  StrictHostKeyChecking no
-EOF
+
+          if [[ "$ENV" == "tn-staging" ]]; then
+            JUMPHOST_USER="${JUMPHOST%%@*}"
+            JUMPHOST_HOST="${JUMPHOST##*@}"
+            echo "Host jumphost"           >  /tmp/ssh_config
+            echo "  HostName $JUMPHOST_HOST" >> /tmp/ssh_config
+            echo "  User $JUMPHOST_USER"     >> /tmp/ssh_config
+            echo "  IdentityFile /tmp/id_rsa" >> /tmp/ssh_config
+            echo "  StrictHostKeyChecking no" >> /tmp/ssh_config
+            echo "Host target"              >> /tmp/ssh_config
+            echo "  HostName $HOSTNAME"     >> /tmp/ssh_config
+            echo "  User $USER"             >> /tmp/ssh_config
+            echo "  IdentityFile /tmp/id_rsa" >> /tmp/ssh_config
+            echo "  ProxyJump jumphost"     >> /tmp/ssh_config
+            echo "  StrictHostKeyChecking no" >> /tmp/ssh_config
           else
-            cat <<EOF > /tmp/ssh_config
-Host target
-  HostName $HOSTNAME
-  User $USER
-  IdentityFile /tmp/id_rsa
-  StrictHostKeyChecking no
-EOF
+            echo "Host target"             >  /tmp/ssh_config
+            echo "  HostName $HOSTNAME"    >> /tmp/ssh_config
+            echo "  User $USER"            >> /tmp/ssh_config
+            echo "  IdentityFile /tmp/id_rsa" >> /tmp/ssh_config
+            echo "  StrictHostKeyChecking no" >> /tmp/ssh_config
           fi
-          
+
           chmod 600 /tmp/ssh_config
-          echo "remote_user=$USER" >> $GITHUB_ENV
+
           echo "target_dir=$TARGET_DIR" >> $GITHUB_ENV
+          echo "remote_user=$USER" >> $GITHUB_ENV
 
       - name: Transfer files
         run: |
           for file in deploy.sh docker-compose.yml; do
+            echo "Transferring $file..."
             rsync -avz -e "ssh -F /tmp/ssh_config" $file target:${{ env.target_dir }}/ || {
               echo "::error::Failed to transfer $file"; exit 1
             }
           done
 
-      - name: Deploy/Rollback
+      - name: Deploy or Rollback
         run: |
           ACTION="${{ steps.vars.outputs.action }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          
+          DIR="${{ env.target_dir }}"
+
           if [[ "$ACTION" == "deploy" ]]; then
-            BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-            ssh -F /tmp/ssh_config target "
-              cd $TARGET_DIR && \
-              chmod +x deploy.sh && \
-              ./deploy.sh \"$TARGET_DIR\" \"$BRANCH\" deploy
-            " || { echo "::error::Deployment failed"; exit 1; }
-          else
+            BRANCH="${{ github.event.inputs.branch }}"
+            [[ -z "$BRANCH" ]] && BRANCH="${{ github.ref_name }}"
+            echo "Deploying branch: $BRANCH"
+            ssh -F /tmp/ssh_config target "cd $DIR && chmod +x deploy.sh && ./deploy.sh \"$DIR\" \"$BRANCH\" deploy" || {
+              echo "::error::Deployment failed"; exit 1;
+            }
+          elif [[ "$ACTION" == "rollback" ]]; then
             TAG="${{ github.event.inputs.rollback_tag }}"
             [ -z "$TAG" ] && { echo "::error::Rollback tag required"; exit 1; }
-            ssh -F /tmp/ssh_config target "
-              cd $TARGET_DIR && \
-              chmod +x deploy.sh && \
-              ./deploy.sh \"$TARGET_DIR\" \"$TAG\" rollback
-            " || { echo "::error::Rollback failed"; exit 1; }
+            echo "Rolling back to tag: $TAG"
+            ssh -F /tmp/ssh_config target "cd $DIR && chmod +x deploy.sh && ./deploy.sh \"$DIR\" \"$TAG\" rollback" || {
+              echo "::error::Rollback failed"; exit 1;
+            }
+          else
+            echo "::error::Invalid action"; exit 1;
           fi
 
       - name: Verify deployment
@@ -175,10 +175,12 @@ EOF
       - name: Notify Slack
         if: always()
         run: |
+          STATUS="${{ job.status }}"
+          ICON=$([[ "$STATUS" == "success" ]] && echo ":white_check_mark:" || echo ":x:")
+          TEXT="$ICON Deployment $STATUS for all-content-service\nEnvironment: ${{ steps.vars.outputs.environment }}\nAction: ${{ steps.vars.outputs.action }}\nRef: ${{ github.ref_name }}"
           curl -X POST -H 'Content-type: application/json' \
-          --data "{\"text\":\"${{ job.status == 'success' && ':white_check_mark:' || ':x:' }} Deployment ${{ job.status }} for all-content-service\n*Environment:* ${{ steps.vars.outputs.environment }}\n*Action:* ${{ steps.vars.outputs.action }}\n*Ref:* ${{ github.ref_name }}\"}" \
-          "${{ secrets.SLACK_WEBHOOK_URL }}"
+          --data "{\"text\": \"$TEXT\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
 
       - name: Cleanup
         if: always()
-        run: rm -f /tmp/id_rsa /tmp/ssh_config
+        run: rm -f /tmp/id_rsa /tmp/ssh_config /tmp/id_rsa.pub
