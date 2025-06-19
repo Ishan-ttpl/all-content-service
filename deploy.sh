@@ -18,6 +18,13 @@ echo "Deploying to $TARGET_DIR with $BRANCH_OR_TAG for action $ACTION"
 
 cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
 
+# Check for nested all-content-service/ directory
+if [ -d "all-content-service/.git" ]; then
+  echo "Warning: Found nested all-content-service/.git, moving contents..."
+  mv all-content-service/* all-content-service/.git . || { echo "Failed to move nested directory contents"; exit 1; }
+  rm -rf all-content-service/ || true
+fi
+
 # Ensure docker directory exists
 mkdir -p "$TARGET_DIR/docker" || { echo "Failed to create $TARGET_DIR/docker"; exit 1; }
 
@@ -26,7 +33,7 @@ if [ ! -d ".git" ]; then
   echo "Error: .git directory not found in $TARGET_DIR, cloning repository..."
   cd ..
   rm -rf "$(basename "$TARGET_DIR")" || true
-  git clone <your-repo-url> "$(basename "$TARGET_DIR")" || { echo "Failed to clone repository"; exit 1; }
+  git clone git@github.com:your-org/all-content-service.git "$(basename "$TARGET_DIR")" || { echo "Failed to clone repository"; exit 1; }
   cd "$TARGET_DIR" || { echo "Failed to cd back to $TARGET_DIR"; exit 1; }
 fi
 
@@ -48,6 +55,7 @@ cat docker-compose.yml
 
 echo "Cleaning up Git working directory..."
 cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
+git config --global --add safe.directory "$TARGET_DIR" || { echo "Failed to add safe.directory"; exit 1; }
 git stash --include-untracked || true
 git reset --hard || true
 git clean -fd || true
