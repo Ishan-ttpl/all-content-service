@@ -102,6 +102,7 @@ jobs:
           missing_secrets=""
           invalid_hosts=""
 
+          # Check for the presence of secrets
           [[ -z "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" ]] && missing_secrets="$missing_secrets DEPLOY_SCRIPT_CONTENT"
           [[ -z "${{ secrets.DOCKER_COMPOSE_CONTENT }}" ]] && missing_secrets="$missing_secrets DOCKER_COMPOSE_CONTENT"
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
