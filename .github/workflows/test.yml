@@ -31,16 +31,15 @@ on:
         description: 'Branch to deploy (only for deploy)'
         required: false
         default: 'main'
-        type: string
       rollback_tag:
         description: 'Tag to rollback to (only for rollback, e.g., deploy-tn-staging-v1.0.0)'
         required: false
-        type: string
 
 jobs:
   deploy-or-rollback:
     runs-on: ubuntu-22.04
     environment: ${{ github.event.inputs.environment || 'tn-staging' }}
+
     steps:
       - name: Determine environment and action
         id: vars
@@ -117,10 +116,8 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           missing_secrets=""
           invalid_hosts=""
-
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
           [[ -z "${{ secrets.ENV_FILE }}" ]] && missing_secrets="$missing_secrets ENV_FILE"
-
           case "$ENVIRONMENT" in
             "test-rig-dev")
               [[ -z "${{ secrets.TEST_RIG_DEV_HOST }}" ]] && missing_secrets="$missing_secrets TEST_RIG_DEV_HOST"
@@ -146,12 +143,10 @@ jobs:
               exit 1
               ;;
           esac
-
           if [[ -n "$missing_secrets" ]]; then
             echo "::error::Missing required secrets for $ENVIRONMENT:$missing_secrets"
             exit 1
           fi
-
           if [[ -n "$invalid_hosts" ]]; then
             echo "::error::Invalid host format (expected user@host) for $ENVIRONMENT:$invalid_hosts"
             exit 1
@@ -162,6 +157,8 @@ jobs:
           echo "${{ secrets.SSH_KEY }}" > /tmp/id_rsa
           chmod 600 /tmp/id_rsa
           ssh-keygen -y -f /tmp/id_rsa > /tmp/id_rsa.pub
+          ls -l /tmp/id_rsa.pub
+          cat /tmp/id_rsa.pub
           echo "public_key=$(cat /tmp/id_rsa.pub)" >> "$GITHUB_ENV"
 
       - name: Set up SSH keys and config
@@ -169,25 +166,29 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           mkdir -p ~/.ssh
           chmod 600 /tmp/id_rsa
-
+          ls -l /tmp/id_rsa
+          ssh-keygen -l -f /tmp/id_rsa
           case "$ENVIRONMENT" in
             "test-rig-dev")
               HOST="${{ secrets.TEST_RIG_DEV_HOST }}"
               TARGET_DIR="/home/sudeepr/git/all-content-service"
               USER="${HOST%%@*}"
               HOSTNAME="${HOST##*@}"
+              echo -e "Host target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15" > /tmp/ssh_config
               ;;
             "test-rig-prod")
               HOST="${{ secrets.TEST_RIG_PROD_HOST }}"
               TARGET_DIR="/home/sudeepr/all-services/all-content-service"
               USER="${HOST%%@*}"
               HOSTNAME="${HOST##*@}"
+              echo -e "Host target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15" > /tmp/ssh_config
               ;;
             "tn-dev")
               HOST="${{ secrets.TN_DEV_HOST }}"
               TARGET_DIR="/home/alldevuser/git/all-content-service"
               USER="${HOST%%@*}"
               HOSTNAME="${HOST##*@}"
+              echo -e "Host target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15" > /tmp/ssh_config
               ;;
             "tn-staging")
               HOST="${{ secrets.TN_STAGING_HOST }}"
@@ -197,78 +198,49 @@ jobs:
               HOSTNAME="${HOST##*@}"
               JUMPHOST_USER="${JUMPHOST%%@*}"
               JUMPHOST_HOST="${JUMPHOST##*@}"
-
-              # IMPORTANT: The 'EOL' below must align with the 'cat' command's starting column.
-              cat > ~/.ssh/config << EOL
-Host jumphost
-  HostName ${JUMPHOST_HOST}
-  User ${JUMPHOST_USER}
-  IdentityFile /tmp/id_rsa
-  StrictHostKeyChecking no
-  ServerAliveInterval 180
-  ServerAliveCountMax 15
-
-Host target
-  HostName ${HOSTNAME}
-  User ${USER}
-  IdentityFile /tmp/id_rsa
-  ProxyJump jumphost
-  StrictHostKeyChecking no
-  ServerAliveInterval 180
-  ServerAliveCountMax 15
-EOL
+              echo -e "Host jumphost\n  HostName $JUMPHOST_HOST\n  User $JUMPHOST_USER\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\nHost target\n  HostName $HOSTNAME\n  User $USER\n  IdentityFile /tmp/id_rsa\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15" > /tmp/ssh_config
               ;;
             *)
               echo "::error::Unknown environment: $ENVIRONMENT"
               exit 1
               ;;
           esac
-
-          # For environments without a jump host (only if not tn-staging)
-          if [[ "$ENVIRONMENT" != "tn-staging" ]]; then
-            # IMPORTANT: The 'EOL' below must align with the 'cat' command's starting column.
-            cat > ~/.ssh/config << EOL
-Host target
-  HostName ${HOSTNAME}
-  User ${USER}
-  IdentityFile /tmp/id_rsa
-  StrictHostKeyChecking no
-  ServerAliveInterval 180
-  ServerAliveCountMax 15
-EOL
-          fi
-
-          chmod 600 ~/.ssh/config
-          echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
+          chmod 600 /tmp/ssh_config
+          ls -l /tmp/ssh_config
+          cat /tmp/ssh_config
           echo "remote_user=$USER" >> "$GITHUB_ENV"
-
-          ssh-keyscan -H "$HOSTNAME" >> ~/.ssh/known_hosts 2>/dev/null || true
-          [[ -n "$JUMPHOST" ]] && ssh-keyscan -H "$JUMPHOST_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
+          ssh-keyscan -H $HOSTNAME >> ~/.ssh/known_hosts 2>/dev/null || true
+          if [[ -n "$JUMPHOST" ]]; then
+            ssh-keyscan -H $JUMPHOST_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
+          cat ~/.ssh/known_hosts
 
       - name: Setup SSH key on target for tn-staging
         if: steps.vars.outputs.environment == 'tn-staging'
         run: |
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh" && break
+            ssh -F /tmp/ssh_config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh" && break
             echo "SSH mkdir attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to create .ssh directory"; exit 1; }
-
+          
           echo "${{ env.public_key }}" > /tmp/id_rsa.pub
-          rsync -avz -e "ssh -F ~/.ssh/config" /tmp/id_rsa.pub target:~/.ssh/id_rsa.pub || {
-            echo "::error::Failed to transfer public key"
-            exit 1
-          }
-
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" && break
-            echo "SSH authorized_keys update attempt $attempt failed, retrying..."
+            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" /tmp/id_rsa.pub target:~/.ssh/id_rsa.pub && break
+            echo "Rsync public key attempt $attempt failed, retrying in 10 seconds..."
+            sleep 10
+          done || { echo "::error::Failed to rsync public key"; exit 1; }
+          
+          for attempt in {1..5}; do
+            ssh -F /tmp/ssh_config target "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" && break
+            echo "SSH authorized_keys attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to update authorized_keys"; exit 1; }
-
+          
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "ls -ld ~ ~/.ssh ~/.ssh/authorized_keys && cat ~/.ssh/authorized_keys" && break
-            echo "Verify authorized_keys attempt $attempt failed, retrying..."
+            ssh -F /tmp/ssh_config target "ls -ld ~ ~/.ssh ~/.ssh/authorized_keys && cat ~/.ssh/authorized_keys" && break
+            echo "SSH verify authorized_keys attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to verify authorized_keys"; exit 1; }
 
@@ -277,68 +249,62 @@ EOL
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
             for attempt in {1..5}; do
-              ssh -F ~/.ssh/config jumphost "echo Jump host connection successful" && break
-              echo "Jump host attempt $attempt failed, retrying..."
+              ssh -vvv -F /tmp/ssh_config jumphost "echo 'Jump host connection successful'" && break
+              echo "Jump host attempt $attempt failed, retrying in 10 seconds..."
               sleep 10
-            done || { echo "::error::Jump host connection failed"; exit 1; }
+            done || { echo "::error::Jump host connection failed"; cat /tmp/ssh_config; exit 1; }
           fi
-
+          
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "echo Target host connection successful" && break
-            echo "Target host attempt $attempt failed, retrying..."
+            ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" && break
+            echo "Target host attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Target host connection failed"; exit 1; }
+          done || { echo "::error::Target host connection failed"; cat /tmp/ssh_config; exit 1; }
 
       - name: Install dos2unix on target server
         run: |
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "sudo apt-get update && sudo apt-get install -y dos2unix" && break
-            echo "dos2unix install attempt $attempt failed, retrying..."
+            ssh -F /tmp/ssh_config target "sudo apt-get update && sudo apt-get install -y dos2unix" && break
+            echo "dos2unix install attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::warning::Failed to install dos2unix on target"; }
+          done || { echo "::warning::Failed to install dos2unix"; }
 
       - name: Create and transfer .env file
         run: |
           TARGET_DIR="${{ env.target_dir }}"
           echo "${{ secrets.ENV_FILE }}" > .env
           chmod 600 .env
+          ls -l .env
+          
           for attempt in {1..5}; do
-            rsync -avz --timeout=60 -e "ssh -F ~/.ssh/config" .env target:"$TARGET_DIR/.env" && break
-            echo "Rsync .env attempt $attempt failed, retrying..."
+            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" .env target:$TARGET_DIR/.env && break
+            echo "Rsync .env attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to rsync .env file"; exit 1; }
-
+          done || { echo "::error::Failed to rsync .env file after 5 attempts"; exit 1; }
+          
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "ls -l $TARGET_DIR/.env && cat $TARGET_DIR/.env" && break
-            echo "Verify .env attempt $attempt failed, retrying..."
+            ssh -vvv -F /tmp/ssh_config target "ls -l $TARGET_DIR/.env && cat $TARGET_DIR/.env" && break
+            echo "Verify .env attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to verify .env file on target"; exit 1; }
-
+          done || { echo "::error::Failed to verify .env on target server"; exit 1; }
+          
           rm -f .env
 
-      - name: Transfer and Verify docker-compose.yml on server
+      - name: Verify docker-compose.yml on server
         run: |
           TARGET_DIR="${{ env.target_dir }}"
-          # Transfer docker-compose.yml to the target server
           for attempt in {1..5}; do
-            rsync -avz --timeout=60 -e "ssh -F ~/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml" && break
-            echo "Rsync docker-compose.yml attempt $attempt failed, retrying..."
+            ssh -F /tmp/ssh_config target "ls -la $TARGET_DIR/ && cat $TARGET_DIR/docker-compose.yml && docker-compose -f $TARGET_DIR/docker-compose.yml config" && break
+            echo "Verify docker-compose.yml attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to rsync docker-compose.yml"; exit 1; }
-
-          # Now, run the verification on the remote server
-          for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "cd $TARGET_DIR && cat docker-compose.yml && docker-compose config" && break
-            echo "Verify docker-compose.yml attempt $attempt failed, retrying..."
-            sleep 10
-          done || { echo "::error::Failed to validate docker-compose.yml"; exit 1; }
+          done || { echo "::error::Failed to verify docker-compose.yml"; exit 1; }
 
       - name: Clean up Git working directory
         run: |
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "cd $TARGET_DIR && git status && git stash --include-untracked || true && git reset --hard || true && git clean -fd || true" && break
-            echo "Git cleanup attempt $attempt failed, retrying..."
+            ssh -F /tmp/ssh_config target "cd $TARGET_DIR && ls -la && git status && git stash --include-untracked || true && git reset --hard || true && git clean -fd || true" && break
+            echo "Git cleanup attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to clean Git working directory"; exit 1; }
 
@@ -346,8 +312,8 @@ EOL
         run: |
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "cd $TARGET_DIR && docker-compose down --remove-orphans || true && docker rm -f content-service || true" && break
-            echo "Docker cleanup attempt $attempt failed, retrying..."
+            ssh -F /tmp/ssh_config target "cd $TARGET_DIR && docker-compose down --remove-orphans || true && docker rm -f content-service || true && docker ps -a && docker images" && break
+            echo "Docker cleanup attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to clean Docker environment"; exit 1; }
 
@@ -355,78 +321,65 @@ EOL
         run: |
           TARGET_DIR="${{ env.target_dir }}"
           dos2unix deploy.sh
+          cat deploy.sh
+          wc -l deploy.sh
+          od -c deploy.sh | head -n 10
           bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh locally"; exit 1; }
-
+          
           for attempt in {1..5}; do
-            rsync -avz --timeout=60 -e "ssh -F ~/.ssh/config" deploy.sh target:"$TARGET_DIR/deploy.sh" && break
-            echo "Rsync deploy.sh attempt $attempt failed, retrying..."
+            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/deploy.sh && break
+            echo "Rsync deploy.sh attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to rsync deploy.sh"; exit 1; }
-
+          
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "dos2unix $TARGET_DIR/deploy.sh && bash -n $TARGET_DIR/deploy.sh" && break
-            echo "Remote deploy.sh verification failed, retrying..."
+            ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/deploy.sh && cat $TARGET_DIR/deploy.sh && wc -l $TARGET_DIR/deploy.sh && od -c $TARGET_DIR/deploy.sh | head -n 10 && bash -n $TARGET_DIR/deploy.sh" && break
+            echo "Verify deploy.sh attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Syntax error in remote deploy.sh"; exit 1; }
+          done || { echo "::error::Syntax error in deploy.sh on target server"; exit 1; }
 
-      - name: Deploy or Rollback
+      - name: Deploy or rollback
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           ACTION="${{ steps.vars.outputs.action }}"
           TARGET_DIR="${{ env.target_dir }}"
-
-          if [[ "$ACTION" == "deploy" ]]; then
-            BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-          elif [[ "$ACTION" == "rollback" ]]; then
-            BRANCH="${{ github.event.inputs.rollback_tag }}"
-            if [[ -z "$BRANCH" ]]; then
-              echo "::error::Rollback tag required"
+          
+          for attempt in {1..5}; do
+            if [[ "$ACTION" == "deploy" ]]; then
+              BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $BRANCH deploy && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
+            elif [[ "$ACTION" == "rollback" ]]; then
+              ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
+              if [[ -z "$ROLLBACK_TAG" ]]; then
+                echo "::error::Rollback tag required"
+                exit 1
+              fi
+              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
+            else
+              echo "::error::Invalid action: $ACTION"
               exit 1
             fi
-          else
-            echo "::error::Invalid action: $ACTION"
-            exit 1
-          fi
-
-          for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "cd $TARGET_DIR && sudo bash deploy.sh \"$TARGET_DIR\" \"$BRANCH\" \"$ACTION\"" && break
-            echo "$ACTION attempt $attempt failed, retrying..."
+            echo "Deploy/rollback attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to $ACTION after 5 attempts"; exit 1; }
+          done || { echo "::error::Failed to deploy/rollback after 5 attempts"; exit 1; }
 
       - name: Verify container logs
         run: |
           for attempt in {1..5}; do
-            ssh -F ~/.ssh/config target "docker logs content-service || echo 'No logs available'" && break
-            echo "Log verification failed, retrying..."
+            ssh -F /tmp/ssh_config target "docker logs content-service || echo 'Failed to get container logs'" && break
+            echo "Verify container logs attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to retrieve container logs"; exit 1; }
+          done || { echo "::error::Failed to verify container logs"; exit 1; }
 
       - name: Notify Slack
         if: always()
         run: |
+          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           STATUS="${{ job.status == 'success' && 'Succeeded' || 'Failed' }}"
           EMOJI="${{ job.status == 'success' && ':white_check_mark:' || ':x:' }}"
-          SLACK_MESSAGE="*$EMOJI Deployment $STATUS for all-content-service*
-*Environment:* ${{ steps.vars.outputs.environment }}
-*Action:* ${{ github.event.inputs.action }}
-*Ref:* ${{ github.ref_name }}
-*Run URL:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          if [[ "${{ github.event.inputs.action }}" == "rollback" && -n "${{ github.event.inputs.rollback_tag }}" ]]; then
-            SLACK_MESSAGE+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
-          fi
-
-          # Ensure SLACK_WEBHOOK_URL is not empty before attempting to curl
-          if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
-            curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\":\"$SLACK_MESSAGE\"}" \
-            "${{ secrets.SLACK_WEBHOOK_URL }}"
-          else
-            echo "::warning::SLACK_WEBHOOK_URL secret is not set, skipping Slack notification."
-          fi
+          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$EMOJI Deployment $STATUS for all-content-service\n*Environment:* $ENVIRONMENT\n*Action:* ${{ github.event.inputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
 
       - name: Cleanup temporary files
         if: always()
         run: |
-          rm -f /tmp/id_rsa /tmp/id_rsa.pub ~/.ssh/config ~/.ssh/known_hosts
+          rm -f /tmp/id_rsa /tmp/ssh_config .env /tmp/id_rsa.pub
