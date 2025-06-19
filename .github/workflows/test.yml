@@ -102,7 +102,6 @@ jobs:
           missing_secrets=""
           invalid_hosts=""
 
-          # Debug: List all available secrets
           echo "Available secrets:"
           echo "DEPLOY_SCRIPT_CONTENT: ${${{ secrets.DEPLOY_SCRIPT_CONTENT }}:+present}"
           echo "DOCKER_COMPOSE_CONTENT: ${${{ secrets.DOCKER_COMPOSE_CONTENT }}:+present}"
