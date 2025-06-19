@@ -50,8 +50,9 @@ if [ ! -f "$TARGET_DIR/docker-compose.yml" ]; then
   exit 1
 fi
 # Copy docker-compose.yml to docker/ directory
+rm -f "$TARGET_DIR/docker/docker-compose.yml" || true
 cp "$TARGET_DIR/docker-compose.yml" "$TARGET_DIR/docker/docker-compose.yml" || { echo "Failed to copy docker-compose.yml"; exit 1; }
-cat docker-compose.yml
+cat "$TARGET_DIR/docker/docker-compose.yml"
 
 echo "Checking .env file..."
 if [ ! -f "$TARGET_DIR/.env" ]; then
