@@ -98,7 +98,6 @@ jobs:
           missing_secrets=""
           invalid_hosts=""
 
-          # Assign secrets directly — no Base64 needed
           _deploy_script_content="${{ secrets.DEPLOY_SCRIPT_CONTENT }}"
           _docker_compose_content="${{ secrets.DOCKER_COMPOSE_CONTENT }}"
           _ssh_key="${{ secrets.SSH_KEY }}"
@@ -160,7 +159,6 @@ jobs:
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           mkdir -p ~/.ssh
-
           case "$ENVIRONMENT" in
             "test-rig-dev")
               HOST="${{ secrets.TEST_RIG_DEV_HOST }}"
@@ -189,18 +187,22 @@ jobs:
               JUMPHOST_USER="${JUMPHOST%%@*}"
               JUMPHOST_HOST="${JUMPHOST##*@}"
 
-              echo -e "Host jumphost
-  HostName $JUMPHOST_HOST
-  User $JUMPHOST_USER
+              # Safe multi-line string using EOF marker
+              cat > ~/.ssh/config << 'EOL'
+Host jumphost
+  HostName ${JUMPHOST_HOST}
+  User ${JUMPHOST_USER}
   IdentityFile /tmp/id_rsa
   StrictHostKeyChecking no
   ServerAliveInterval 180
   ServerAliveCountMax 15
+
 Host target
-  HostName $HOSTNAME
-  User $USER
+  HostName ${HOSTNAME}
+  User ${USER}
   IdentityFile /tmp/id_rsa
-  ProxyJump jumphost" > ~/.ssh/config
+  ProxyJump jumphost
+EOL
               ;;
             *)
               echo "::error::Unknown environment: $ENVIRONMENT"
@@ -208,10 +210,12 @@ Host target
               ;;
           esac
 
-          [[ -z "$JUMPHOST" && -n "$HOST" ]] && echo -e "Host target
-  HostName $HOSTNAME
-  User $USER
-  IdentityFile /tmp/id_rsa" > ~/.ssh/config
+          [[ -z "$JUMPHOST" && -n "$HOST" ]] && cat > ~/.ssh/config << EOL
+Host target
+  HostName ${HOSTNAME}
+  User ${USER}
+  IdentityFile /tmp/id_rsa
+EOL
 
           chmod 600 ~/.ssh/config
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
