@@ -89,7 +89,7 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           missing_secrets=""
           invalid_hosts=""
-          # Check for missing secrets without decoding
+          # Check for missing secrets
           [[ -z "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" ]] && missing_secrets+=" DEPLOY_SCRIPT_CONTENT"
           [[ -z "${{ secrets.DOCKER_COMPOSE_CONTENT }}" ]] && missing_secrets+=" DOCKER_COMPOSE_CONTENT"
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets+=" SSH_KEY"
@@ -245,7 +245,7 @@ jobs:
           cat docker-compose.yml
 
       - name: Create and transfer .env file
-        if: "${{ secrets.ENV_FILE }}"
+        if: secrets.ENV_FILE != ''
         run: |
           TARGET_DIR="${{ env.target_dir }}"
           echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
@@ -265,8 +265,10 @@ jobs:
       - name: Transfer deploy.sh and docker-compose.yml to target
         run: |
           TARGET_DIR="${{ env.target_dir }}"
+          mkdir -p scripts
+          mv deploy.sh scripts/deploy.sh
           for attempt in {1..5}; do
-            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/scripts/deploy.sh && break
+            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" scripts/deploy.sh target:$TARGET_DIR/scripts/deploy.sh && break
             echo "Rsync deploy.sh attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to rsync deploy.sh"; exit 1; }
@@ -279,67 +281,4 @@ jobs:
             ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/scripts/deploy.sh $TARGET_DIR/docker-compose.yml" && break
             echo "DOS2UNIX conversion attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to convert line endings"; exit 1; }
-          for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "ls -la $TARGET_DIR/scripts/deploy.sh $TARGET_DIR/docker-compose.yml && cat $TARGET_DIR/scripts/deploy.sh && cat $TARGET_DIR/docker-compose.yml" && break
-            echo "Verify transferred files attempt $attempt failed, retrying in 10 seconds..."
-            sleep 10
-          done || { echo "::error::Failed to verify transferred files on target"; exit 1; }
-
-      - name: Execute Deploy or Rollback Script on Target
-        run: |
-          ACTION="${{ steps.vars.outputs.action }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          if [[ "$ACTION" == "deploy" ]]; then
-            BRANCH_OR_TAG="${{ github.event.inputs.branch || 'main' }}"
-          elif [[ "$ACTION" == "rollback" ]]; then
-            BRANCH_OR_TAG="${{ github.event.inputs.rollback_tag }}"
-            if [[ -z "$BRANCH_OR_TAG" ]]; then
-              echo "::error::Rollback tag required for rollback action."
-              exit 1
-            fi
-          else
-            echo "::error::Invalid action: $ACTION"
-            exit 1
-          fi
-          echo "Executing deploy.sh on target: $TARGET_DIR/scripts/deploy.sh \"$TARGET_DIR\" \"$BRANCH_OR_TAG\" \"$ACTION\""
-          for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "sudo bash $TARGET_DIR/scripts/deploy.sh \"$TARGET_DIR\" \"$BRANCH_OR_TAG\" \"$ACTION\" && docker ps -a && docker logs content-service || echo 'No logs available'" && break
-            echo "Execution attempt $attempt failed, retrying in 10 seconds..."
-            sleep 10
-          done || { echo "::error::Failed to execute deploy.sh on target after 5 attempts"; exit 1; }
-
-      - name: Final Container Status Verification
-        run: |
-          TARGET_DIR="${{ env.target_dir }}"
-          SERVICE_NAME="content-service"
-          echo "Performing final verification of $SERVICE_NAME container status and logs..."
-          for attempt in {1..15}; do
-            if ssh -F /tmp/ssh_config target "sudo docker ps --filter name=$SERVICE_NAME --format '{{.Status}}' | grep -q 'Up'"; then
-              echo "$SERVICE_NAME container is running and healthy."
-              ssh -F /tmp/ssh_config target "sudo docker logs $SERVICE_NAME --tail 100"
-              break
-            else
-              echo "$SERVICE_NAME container not yet running or not healthy. Retrying in 10 seconds..."
-              sleep 10
-            fi
-          done || { echo "::error::Failed to verify $SERVICE_NAME container status and logs"; exit 1; }
-
-      - name: Notify Slack
-        if: always()
-        run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          STATUS="${{ job.status == 'success' && 'Succeeded' || 'Failed' }}"
-          EMOJI="${{ job.status == 'success' && ':white_check_mark:' || ':x:' }}"
-          SLACK_MESSAGE="*All-Content-Service Deployment Status: $STATUS $EMOJI*\n*Environment:* $ENVIRONMENT\n*Action:* ${{ steps.vars.outputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run URL:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [[ "${{ steps.vars.outputs.action }}" == "rollback" && -n "${{ github.event.inputs.rollback_tag }}" ]]; then
-            SLACK_MESSAGE+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
-          fi
-          curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\":\"$SLACK_MESSAGE\"}" \
-            "${{ secrets.SLACK_WEBHOOK_URL }}"
-
-      - name: Cleanup temporary files
-        if: always()
-        run: |
-          rm -f /tmp/id_rsa /tmp/ssh_config .env deploy.sh docker-compose.yml /tmp/id_rsa.pub
+          done || { echo "::error::Failed to convert
