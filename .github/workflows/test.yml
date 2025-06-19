@@ -103,7 +103,8 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           missing_secrets=""
           invalid_hosts=""
-          # Check for DEPLOY_SCRIPT_CONTENT and DOCKER_COMPOSE_CONTENT
+          
+          # Correct way to check for the presence of multi-line secrets
           [[ -z "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" ]] && missing_secrets="$missing_secrets DEPLOY_SCRIPT_CONTENT"
           [[ -z "${{ secrets.DOCKER_COMPOSE_CONTENT }}" ]] && missing_secrets="$missing_secrets DOCKER_COMPOSE_CONTENT"
 
@@ -261,20 +262,22 @@ jobs:
 
       - name: Create deploy.sh and docker-compose.yml on runner from secrets
         run: |
+          echo "Creating deploy.sh from DEPLOY_SCRIPT_CONTENT secret..."
           echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" > deploy.sh
+          echo "Creating docker-compose.yml from DOCKER_COMPOSE_CONTENT secret..."
           echo "${{ secrets.DOCKER_COMPOSE_CONTENT }}" > docker-compose.yml
           chmod +x deploy.sh
-          # Convert line endings immediately
+          # Convert line endings immediately to prevent issues during transfer/execution
           dos2unix deploy.sh docker-compose.yml
-          echo "--- deploy.sh content ---"
-          cat deploy.sh
+          echo "--- deploy.sh content (first 20 lines) ---"
+          head -n 20 deploy.sh
           echo "--- docker-compose.yml content ---"
           cat docker-compose.yml
 
       - name: Create and transfer .env file
         run: |
           TARGET_DIR="${{ env.target_dir }}"
-          echo "Creating .env file locally..."
+          echo "Creating .env file locally from ENV_FILE secret..."
           echo "${{ secrets.ENV_FILE }}" > .env
           chmod 600 .env
           ls -l .env
@@ -289,7 +292,7 @@ jobs:
 
           echo "Verifying .env file on target..."
           for attempt in {1..5}; do
-            ssh -vvv -F /tmp/ssh_config target "ls -l $TARGET_DIR/.env && sudo cat $TARGET_DIR/.env" && break # Use sudo cat to see content
+            ssh -vvv -F /tmp/ssh_config target "ls -l $TARGET_DIR/.env && sudo cat $TARGET_DIR/.env | head -n 5" && break # Use sudo cat and limit output
             echo "Verify .env attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to verify .env on target server"; exit 1; }
@@ -323,7 +326,7 @@ jobs:
 
           echo "Verifying transferred deploy.sh and docker-compose.yml on target..."
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "ls -la $TARGET_DIR/deploy.sh $TARGET_DIR/docker-compose.yml && sudo cat $TARGET_DIR/deploy.sh && sudo cat $TARGET_DIR/docker-compose.yml" && break
+            ssh -F /tmp/ssh_config target "ls -la $TARGET_DIR/deploy.sh $TARGET_DIR/docker-compose.yml && sudo head -n 5 $TARGET_DIR/deploy.sh && sudo cat $TARGET_DIR/docker-compose.yml" && break
             echo "Verify transferred files attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to verify transferred deploy.sh and docker-compose.yml on target"; exit 1; }
