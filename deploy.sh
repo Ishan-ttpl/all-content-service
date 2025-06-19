@@ -18,10 +18,23 @@ echo "Deploying to $TARGET_DIR with $BRANCH_OR_TAG for action $ACTION"
 
 cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
 
+# Check for nested all-content-service/ directory
+if [ -d "all-content-service/.git" ]; then
+  echo "Warning: Found nested all-content-service/.git, moving contents..."
+  mv all-content-service/* all-content-service/.git . || { echo "Failed to move nested directory contents"; exit 1; }
+  rm -rf all-content-service/ || true
+fi
+
+# Ensure docker directory exists
+mkdir -p "$TARGET_DIR/docker" || { echo "Failed to create $TARGET_DIR/docker"; exit 1; }
+
 # Verify .git directory
 if [ ! -d ".git" ]; then
-  echo "Error: .git directory not found in $TARGET_DIR"
-  exit 1
+  echo "Error: .git directory not found in $TARGET_DIR, cloning repository..."
+  cd ..
+  rm -rf "$(basename "$TARGET_DIR")" || true
+  git clone git@github.com:your-org/all-content-service.git "$(basename "$TARGET_DIR")" || { echo "Failed to clone repository"; exit 1; }
+  cd "$TARGET_DIR" || { echo "Failed to cd back to $TARGET_DIR"; exit 1; }
 fi
 
 echo "Cleaning up old Docker environment..."
@@ -32,14 +45,25 @@ docker ps -a
 docker images
 
 echo "Checking docker-compose.yml..."
-if [ ! -f "docker-compose.yml" ]; then
-  echo "Error: docker-compose.yml not found in $TARGET_DIR/docker"
+if [ ! -f "$TARGET_DIR/docker-compose.yml" ]; then
+  echo "Error: docker-compose.yml not found in $TARGET_DIR"
   exit 1
 fi
-cat docker-compose.yml
+# Copy docker-compose.yml to docker/ directory
+rm -f "$TARGET_DIR/docker/docker-compose.yml" || true
+cp "$TARGET_DIR/docker-compose.yml" "$TARGET_DIR/docker/docker-compose.yml" || { echo "Failed to copy docker-compose.yml"; exit 1; }
+cat "$TARGET_DIR/docker/docker-compose.yml"
+
+echo "Checking .env file..."
+if [ ! -f "$TARGET_DIR/.env" ]; then
+  echo "Warning: .env file not found in $TARGET_DIR, may cause issues"
+else
+  ls -l "$TARGET_DIR/.env"
+fi
 
 echo "Cleaning up Git working directory..."
 cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
+git config --global --add safe.directory "$TARGET_DIR" || { echo "Failed to add safe.directory"; exit 1; }
 git stash --include-untracked || true
 git reset --hard || true
 git clean -fd || true
