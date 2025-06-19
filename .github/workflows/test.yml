@@ -101,7 +101,7 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           missing_secrets=""
           invalid_hosts=""
-          
+
           [[ -z "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" ]] && missing_secrets="$missing_secrets DEPLOY_SCRIPT_CONTENT"
           [[ -z "${{ secrets.DOCKER_COMPOSE_CONTENT }}" ]] && missing_secrets="$missing_secrets DOCKER_COMPOSE_CONTENT"
           [[ -z "${{ secrets.SSH_KEY }}" ]] && missing_secrets="$missing_secrets SSH_KEY"
@@ -132,10 +132,12 @@ jobs:
               exit 1
               ;;
           esac
+
           if [[ -n "$missing_secrets" ]]; then
             echo "::error::Missing required secrets for $ENVIRONMENT: $missing_secrets"
             exit 1
           fi
+
           if [[ -n "$invalid_hosts" ]]; then
             echo "::error::Invalid host format (expected user@host) for $ENVIRONMENT: $invalid_hosts"
             exit 1
