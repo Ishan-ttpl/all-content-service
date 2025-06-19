@@ -33,13 +33,13 @@ on:
         default: 'main'
         type: string
       rollback_tag:
-        description: 'Tag to rollback to (only for rollback)'
+        description: 'Tag to rollback to (only for rollback, e.g., deploy-tn-staging-v1.0.0)'
         required: false
         type: string
 
 jobs:
   deploy-or-rollback:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     environment: ${{ github.event.inputs.environment || 'tn-staging' }}
     steps:
       - name: Determine environment and action
