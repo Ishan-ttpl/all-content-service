@@ -1,19 +1,13 @@
 version: '3.8'
 services:
   content-service:
-    build: .
     image: all-content-service:latest
     container_name: content-service
     ports:
       - "3008:3008"
     restart: always
-    env_file:
-      - .env
     networks:
-      # --- CHANGE THIS LINE ---
-      - all-learner-ai-services_ai-network # <-- Use underscores here!
-
+      - all-learner-ai-services-ai-network
 networks:
-  # --- CHANGE THIS LINE ---
-  all-learner-ai-services_ai-network: # <-- Use underscores here!
+  all-learner-ai-services-ai-network:
     driver: bridge
