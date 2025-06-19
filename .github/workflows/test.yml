@@ -1,11 +1,5 @@
 name: Deploy or Rollback All-Content-Service
 on:
-  push:
-    tags:
-      - 'deploy-test-rig-dev-*'
-      - 'deploy-test-rig-prod-*'
-      - 'deploy-tn-dev-*'
-      - 'deploy-tn-staging-*'
   workflow_dispatch:
     inputs:
       action:
