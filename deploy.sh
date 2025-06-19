@@ -12,100 +12,93 @@ IMAGE_NAME="all-content-service"
 NETWORK_NAME="all-learner-ai-services-ai-network"
 
 # Validate inputs
-if [ -z "$TARGET_DIR" ] || [ -z "$BRANCH_OR_TAG" ] || [ -z "$ACTION" ]; then
-  echo "Usage: $0 <target_dir> <branch_or_tag> <deploy|rollback>"
-  exit 1
-fi
+[ -z "$TARGET_DIR" ] && { echo "ERROR: Target directory missing"; exit 1; }
+[ -z "$BRANCH_OR_TAG" ] && { echo "ERROR: Branch/Tag missing"; exit 1; }
+[ -z "$ACTION" ] && { echo "ERROR: Action (deploy/rollback) missing"; exit 1; }
 
-echo "Starting $ACTION process for $SERVICE_NAME"
-echo "Target directory: $TARGET_DIR"
-echo "Using branch/tag: $BRANCH_OR_TAG"
+echo "=== Starting $ACTION process ==="
+echo "Target: $TARGET_DIR"
+echo "Version: $BRANCH_OR_TAG"
 
-# Ensure target directory exists
-mkdir -p "$TARGET_DIR" || { echo "Failed to create $TARGET_DIR"; exit 1; }
-cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
+# Setup directory
+mkdir -p "$TARGET_DIR"
+cd "$TARGET_DIR" || { echo "ERROR: Cannot access $TARGET_DIR"; exit 1; }
 
-# Repository setup
+# Clone or update repository
 if [ ! -d ".git" ]; then
-  echo "Cloning repository..."
-  git clone --branch "$BRANCH_OR_TAG" "$REPO_URL" . || { 
-    echo "Failed to clone repository";
-    echo "Trying fallback to clone then checkout...";
-    git clone "$REPO_URL" . && git checkout "$BRANCH_OR_TAG" || exit 1;
-  }
+  echo "Cloning fresh repository..."
+  git clone --branch "$BRANCH_OR_TAG" "$REPO_URL" . || {
+    echo "WARNING: Branch checkout failed, cloning main then checking out"
+    git clone "$REPO_URL" . && git checkout "$BRANCH_OR_TAG"
+  } || { echo "ERROR: Git operations failed"; exit 1; }
 else
-  echo "Resetting repository..."
-  git fetch --all || { echo "Failed to fetch updates"; exit 1; }
-  git clean -fd || true
-  git reset --hard || true
+  echo "Updating existing repository..."
+  git fetch --all || { echo "ERROR: Git fetch failed"; exit 1; }
+  git clean -fd
+  git reset --hard
   
   if [ "$ACTION" = "deploy" ]; then
-    echo "Checking out branch: $BRANCH_OR_TAG"
-    git checkout "$BRANCH_OR_TAG" || { echo "Failed to checkout branch"; exit 1; }
-    git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull updates"; exit 1; }
-  elif [ "$ACTION" = "rollback" ]; then
-    echo "Checking out tag: $BRANCH_OR_TAG"
-    git checkout "tags/$BRANCH_OR_TAG" || { echo "Failed to checkout tag"; exit 1; }
+    git checkout "$BRANCH_OR_TAG" && git pull origin "$BRANCH_OR_TAG" || {
+      echo "ERROR: Cannot checkout branch $BRANCH_OR_TAG"; exit 1
+    }
+  else
+    git checkout "tags/$BRANCH_OR_TAG" || {
+      echo "ERROR: Cannot checkout tag $BRANCH_OR_TAG"; exit 1
+    }
   fi
 fi
 
-# Verify compose file exists
-if [ ! -f "$DOCKER_COMPOSE_FILE" ]; then
-  echo "Error: $DOCKER_COMPOSE_FILE not found in $BRANCH_OR_TAG"
+# Verify compose file
+[ ! -f "$DOCKER_COMPOSE_FILE" ] && {
+  echo "ERROR: $DOCKER_COMPOSE_FILE not found in $PWD"
   ls -la
   exit 1
-fi
+}
 
-# Docker operations
+# Docker cleanup
 echo "Stopping existing containers..."
 docker-compose -f "$DOCKER_COMPOSE_FILE" down --remove-orphans || true
 docker rm -f "$SERVICE_NAME" || true
 
-# Image handling
-if [ "$ACTION" = "deploy" ]; then
-  echo "Building new image from branch..."
-  docker build -t "$IMAGE_NAME:$BRANCH_OR_TAG" . || { echo "Build failed"; exit 1; }
-elif [ "$ACTION" = "rollback" ]; then
-  if ! docker image inspect "$IMAGE_NAME:$BRANCH_OR_TAG" >/dev/null 2>&1; then
-    echo "Image not found, building from tag..."
-    docker build -t "$IMAGE_NAME:$BRANCH_OR_TAG" . || { echo "Build failed"; exit 1; }
-  fi
+# Build or use existing image
+if [ "$ACTION" = "deploy" ] || ! docker image inspect "$IMAGE_NAME:$BRANCH_OR_TAG" &>/dev/null; then
+  echo "Building Docker image..."
+  docker build -t "$IMAGE_NAME:$BRANCH_OR_TAG" . || {
+    echo "ERROR: Docker build failed"; exit 1
+  }
 fi
 
-echo "Tagging image as latest..."
-docker tag "$IMAGE_NAME:$BRANCH_OR_TAG" "$IMAGE_NAME:latest" || { echo "Tagging failed"; exit 1; }
+docker tag "$IMAGE_NAME:$BRANCH_OR_TAG" "$IMAGE_NAME:latest" || {
+  echo "ERROR: Docker tag failed"; exit 1
+}
 
-# Network setup
-if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
-  echo "Creating network $NETWORK_NAME..."
-  docker network create "$NETWORK_NAME" || { echo "Network creation failed"; exit 1; }
-fi
+# Ensure network exists
+docker network inspect "$NETWORK_NAME" &>/dev/null || {
+  echo "Creating Docker network..."
+  docker network create "$NETWORK_NAME" || {
+    echo "ERROR: Network creation failed"; exit 1
+  }
+}
 
 # Start service
 echo "Starting service..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" up -d || { echo "Start failed"; exit 1; }
+docker-compose -f "$DOCKER_COMPOSE_FILE" up -d || {
+  echo "ERROR: Service start failed"; exit 1
+}
 
-# Verification
-echo "Verifying deployment..."
+# Verify
 sleep 5
-if ! docker ps --filter "name=$SERVICE_NAME" --format "{{.Status}}" | grep -q "Up"; then
-  echo "Service failed to start"
-  docker logs "$SERVICE_NAME" || true
+docker ps --filter "name=$SERVICE_NAME" | grep -q "Up" || {
+  echo "ERROR: Service not running"
+  docker logs "$SERVICE_NAME" --tail 50 || true
   exit 1
-fi
+}
 
-# Summary
-echo -e "\nDeployment successful!"
-echo "---------------------------------"
-echo "Service:     $SERVICE_NAME"
-echo "Image:       $IMAGE_NAME:latest"
-echo "Source:      $BRANCH_OR_TAG"
-echo "Network:     $NETWORK_NAME"
-echo "Port:        3008"
-echo "---------------------------------"
-echo "Container status:"
-docker ps --filter "name=$SERVICE_NAME" --format "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}"
-echo -e "\nService logs (last 20 lines):"
-docker logs "$SERVICE_NAME" --tail 20 || echo "No logs available"
+echo "=== Deployment Successful ==="
+echo "Service: $SERVICE_NAME"
+echo "Image: $IMAGE_NAME:latest ($BRANCH_OR_TAG)"
+echo "Network: $NETWORK_NAME"
+echo "Port: 3008"
+docker ps --filter "name=$SERVICE_NAME" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
 
 exit 0
