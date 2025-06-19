@@ -338,30 +338,46 @@ jobs:
             sleep 10
           done || { echo "::error::Syntax error in deploy.sh on target server"; exit 1; }
 
-      - name: Deploy or rollback
+      - name: Deploy/Rollback
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
+          # Set variables using outputs from previous steps
           ACTION="${{ steps.vars.outputs.action }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          
-          for attempt in {1..5}; do
-            if [[ "$ACTION" == "deploy" ]]; then
-              BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $BRANCH deploy && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
-            elif [[ "$ACTION" == "rollback" ]]; then
-              ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
-              if [[ -z "$ROLLBACK_TAG" ]]; then
-                echo "::error::Rollback tag required"
-                exit 1
-              fi
-              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
-            else
-              echo "::error::Invalid action: $ACTION"
+          TARGET_DIR="${{ env.target_dir }}" # This comes from the 'Set up SSH keys and config' step
+
+          # The deploy.sh script is already rsync'd and verified in the 'Verify deploy.sh syntax' step,
+          # so we don't need to transfer it again here.
+
+          # Execute action based on input
+          if [[ "$ACTION" == "deploy" ]]; then
+            # For deploy, use the branch from workflow_dispatch input or the ref_name for push tags
+            BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+            echo "Attempting to deploy branch: $BRANCH to $TARGET_DIR"
+            ssh -F /tmp/ssh_config target "
+              chmod +x $TARGET_DIR/deploy.sh
+              $TARGET_DIR/deploy.sh $TARGET_DIR \"$BRANCH\" deploy
+            " || {
+              echo "::error::Deployment failed"
+              exit 1
+            }
+          elif [[ "$ACTION" == "rollback" ]]; then
+            # For rollback, ensure rollback_tag is provided
+            TAG="${{ github.event.inputs.rollback_tag }}"
+            if [ -z "$TAG" ]; then
+              echo "::error::Rollback tag is required for rollback action."
               exit 1
             fi
-            echo "Deploy/rollback attempt $attempt failed, retrying in 10 seconds..."
-            sleep 10
-          done || { echo "::error::Failed to deploy/rollback after 5 attempts"; exit 1; }
+            echo "Attempting to rollback to tag: $TAG in $TARGET_DIR"
+            ssh -F /tmp/ssh_config target "
+              chmod +x $TARGET_DIR/deploy.sh
+              $TARGET_DIR/deploy.sh $TARGET_DIR \"$TAG\" rollback
+            " || {
+              echo "::error::Rollback failed"
+              exit 1
+            }
+          else
+            echo "::error::Invalid action specified: $ACTION. Must be 'deploy' or 'rollback'."
+            exit 1
+          fi
 
       - name: Verify container logs
         run: |
