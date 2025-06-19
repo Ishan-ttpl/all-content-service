@@ -1,104 +1,111 @@
 #!/bin/bash
-
 set -e
 
-# Fix line endings
-sed -i 's/\r$//' "$0"
-
+# Configuration
+REPO_URL="https://github.com/Sunbird-ALL/all-content-service.git"
 TARGET_DIR="$1"
 BRANCH_OR_TAG="$2"
 ACTION="$3"
+SERVICE_NAME="content-service"
+DOCKER_COMPOSE_FILE="docker-compose.yml"
+IMAGE_NAME="all-content-service"
+NETWORK_NAME="all-learner-ai-services-ai-network"
 
+# Validate inputs
 if [ -z "$TARGET_DIR" ] || [ -z "$BRANCH_OR_TAG" ] || [ -z "$ACTION" ]; then
   echo "Usage: $0 <target_dir> <branch_or_tag> <deploy|rollback>"
   exit 1
 fi
 
-echo "Deploying to $TARGET_DIR with $BRANCH_OR_TAG for action $ACTION"
+echo "Starting $ACTION process for $SERVICE_NAME"
+echo "Target directory: $TARGET_DIR"
+echo "Using branch/tag: $BRANCH_OR_TAG"
 
+# Ensure target directory exists
+mkdir -p "$TARGET_DIR" || { echo "Failed to create $TARGET_DIR"; exit 1; }
 cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
 
-# Check for nested all-content-service/ directory
-if [ -d "all-content-service/.git" ]; then
-  echo "Warning: Found nested all-content-service/.git, moving contents..."
-  mv all-content-service/* all-content-service/.git . || { echo "Failed to move nested directory contents"; exit 1; }
-  rm -rf all-content-service/ || true
-fi
-
-# Ensure docker directory exists
-mkdir -p "$TARGET_DIR/docker" || { echo "Failed to create $TARGET_DIR/docker"; exit 1; }
-
-# Verify .git directory
+# Repository setup
 if [ ! -d ".git" ]; then
-  echo "Error: .git directory not found in $TARGET_DIR, cloning repository..."
-  cd ..
-  rm -rf "$(basename "$TARGET_DIR")" || true
-  git clone git@github.com:your-org/all-content-service.git "$(basename "$TARGET_DIR")" || { echo "Failed to clone repository"; exit 1; }
-  cd "$TARGET_DIR" || { echo "Failed to cd back to $TARGET_DIR"; exit 1; }
-fi
-
-echo "Cleaning up old Docker environment..."
-cd "$TARGET_DIR/docker" || { echo "Failed to cd to $TARGET_DIR/docker"; exit 1; }
-docker-compose down --remove-orphans || true
-docker rm -f content-service || true
-docker ps -a
-docker images
-
-echo "Checking docker-compose.yml..."
-if [ ! -f "$TARGET_DIR/docker-compose.yml" ]; then
-  echo "Error: docker-compose.yml not found in $TARGET_DIR"
-  exit 1
-fi
-# Copy docker-compose.yml to docker/ directory
-rm -f "$TARGET_DIR/docker/docker-compose.yml" || true
-cp "$TARGET_DIR/docker-compose.yml" "$TARGET_DIR/docker/docker-compose.yml" || { echo "Failed to copy docker-compose.yml"; exit 1; }
-cat "$TARGET_DIR/docker/docker-compose.yml"
-
-echo "Checking .env file..."
-if [ ! -f "$TARGET_DIR/.env" ]; then
-  echo "Warning: .env file not found in $TARGET_DIR, may cause issues"
+  echo "Cloning repository..."
+  git clone --branch "$BRANCH_OR_TAG" "$REPO_URL" . || { 
+    echo "Failed to clone repository";
+    echo "Trying fallback to clone then checkout...";
+    git clone "$REPO_URL" . && git checkout "$BRANCH_OR_TAG" || exit 1;
+  }
 else
-  ls -l "$TARGET_DIR/.env"
-fi
-
-echo "Cleaning up Git working directory..."
-cd "$TARGET_DIR" || { echo "Failed to cd to $TARGET_DIR"; exit 1; }
-git config --global --add safe.directory "$TARGET_DIR" || { echo "Failed to add safe.directory"; exit 1; }
-git stash --include-untracked || true
-git reset --hard || true
-git clean -fd || true
-git status
-
-if [ "$ACTION" = "deploy" ]; then
-  echo "Deploying branch $BRANCH_OR_TAG..."
-  git fetch --all || { echo "Failed to fetch"; exit 1; }
-  if ! git checkout "$BRANCH_OR_TAG" 2>/dev/null; then
-    echo "Branch $BRANCH_OR_TAG does not exist, checking out main..."
-    git checkout main || { echo "Failed to checkout main"; exit 1; }
-    BRANCH_OR_TAG="main"
+  echo "Resetting repository..."
+  git fetch --all || { echo "Failed to fetch updates"; exit 1; }
+  git clean -fd || true
+  git reset --hard || true
+  
+  if [ "$ACTION" = "deploy" ]; then
+    echo "Checking out branch: $BRANCH_OR_TAG"
+    git checkout "$BRANCH_OR_TAG" || { echo "Failed to checkout branch"; exit 1; }
+    git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull updates"; exit 1; }
+  elif [ "$ACTION" = "rollback" ]; then
+    echo "Checking out tag: $BRANCH_OR_TAG"
+    git checkout "tags/$BRANCH_OR_TAG" || { echo "Failed to checkout tag"; exit 1; }
   fi
-  git reset --hard "origin/$BRANCH_OR_TAG" || { echo "Failed to reset to origin/$BRANCH_OR_TAG"; exit 1; }
-  git clean -fd || { echo "Failed to clean"; exit 1; }
-  git pull origin "$BRANCH_OR_TAG" || { echo "Failed to pull from origin $BRANCH_OR_TAG"; exit 1; }
-  git log -n 1
-elif [ "$ACTION" = "rollback" ]; then
-  echo "Rolling back to tag $BRANCH_OR_TAG..."
-  git fetch --all --tags || { echo "Failed to fetch tags"; exit 1; }
-  git checkout "tags/$BRANCH_OR_TAG" || { echo "Failed to checkout tag $BRANCH_OR_TAG"; exit 1; }
-  git reset --hard "tags/$BRANCH_OR_TAG" || { echo "Failed to reset to tags/$BRANCH_OR_TAG"; exit 1; }
-  git clean -fd || { echo "Failed to clean"; exit 1; }
-  git log -n 1
-else
-  echo "Error: Invalid action $ACTION"
+fi
+
+# Verify compose file exists
+if [ ! -f "$DOCKER_COMPOSE_FILE" ]; then
+  echo "Error: $DOCKER_COMPOSE_FILE not found in $BRANCH_OR_TAG"
+  ls -la
   exit 1
 fi
 
-echo "Building and starting services..."
-cd "$TARGET_DIR/docker" || { echo "Failed to cd to $TARGET_DIR/docker"; exit 1; }
-docker-compose config || { echo "Error: Invalid docker-compose.yml"; exit 1; }
-docker-compose pull || { echo "Error: Failed to pull images"; exit 1; }
-docker-compose up -d --build || { echo "Error: Failed to start services"; exit 1; }
-docker ps -a
-docker logs content-service || echo "No logs available"
+# Docker operations
+echo "Stopping existing containers..."
+docker-compose -f "$DOCKER_COMPOSE_FILE" down --remove-orphans || true
+docker rm -f "$SERVICE_NAME" || true
 
-echo "Deployment complete."
+# Image handling
+if [ "$ACTION" = "deploy" ]; then
+  echo "Building new image from branch..."
+  docker build -t "$IMAGE_NAME:$BRANCH_OR_TAG" . || { echo "Build failed"; exit 1; }
+elif [ "$ACTION" = "rollback" ]; then
+  if ! docker image inspect "$IMAGE_NAME:$BRANCH_OR_TAG" >/dev/null 2>&1; then
+    echo "Image not found, building from tag..."
+    docker build -t "$IMAGE_NAME:$BRANCH_OR_TAG" . || { echo "Build failed"; exit 1; }
+  fi
+fi
+
+echo "Tagging image as latest..."
+docker tag "$IMAGE_NAME:$BRANCH_OR_TAG" "$IMAGE_NAME:latest" || { echo "Tagging failed"; exit 1; }
+
+# Network setup
+if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+  echo "Creating network $NETWORK_NAME..."
+  docker network create "$NETWORK_NAME" || { echo "Network creation failed"; exit 1; }
+fi
+
+# Start service
+echo "Starting service..."
+docker-compose -f "$DOCKER_COMPOSE_FILE" up -d || { echo "Start failed"; exit 1; }
+
+# Verification
+echo "Verifying deployment..."
+sleep 5
+if ! docker ps --filter "name=$SERVICE_NAME" --format "{{.Status}}" | grep -q "Up"; then
+  echo "Service failed to start"
+  docker logs "$SERVICE_NAME" || true
+  exit 1
+fi
+
+# Summary
+echo -e "\nDeployment successful!"
+echo "---------------------------------"
+echo "Service:     $SERVICE_NAME"
+echo "Image:       $IMAGE_NAME:latest"
+echo "Source:      $BRANCH_OR_TAG"
+echo "Network:     $NETWORK_NAME"
+echo "Port:        3008"
+echo "---------------------------------"
+echo "Container status:"
+docker ps --filter "name=$SERVICE_NAME" --format "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}"
+echo -e "\nService logs (last 20 lines):"
+docker logs "$SERVICE_NAME" --tail 20 || echo "No logs available"
+
+exit 0
