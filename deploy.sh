@@ -9,7 +9,7 @@ ACTION="$3"
 SERVICE_NAME="content-service"
 DOCKER_COMPOSE_FILE="docker-compose.yml"
 IMAGE_NAME="all-content-service"
-NETWORK_NAME="all-learner-ai-services-ai-network"
+NETWORK_NAME="all-learner-ai-services_ai-network"  # Corrected network name
 
 # Validate inputs
 [ -z "$TARGET_DIR" ] && { echo "ERROR: Target directory missing"; exit 1; }
@@ -55,50 +55,52 @@ fi
   exit 1
 }
 
-# Docker cleanup
-echo "Stopping existing containers..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" down --remove-orphans || true
+# Docker cleanup - more thorough approach
+echo "Stopping and removing existing containers..."
+docker-compose -f "$DOCKER_COMPOSE_FILE" down --remove-orphans --rmi local || true
 docker rm -f "$SERVICE_NAME" || true
+docker rmi -f "$IMAGE_NAME:latest" "$IMAGE_NAME:$BRANCH_OR_TAG" || true
 
-# Build or use existing image
-if [ "$ACTION" = "deploy" ] || ! docker image inspect "$IMAGE_NAME:$BRANCH_OR_TAG" &>/dev/null; then
-  echo "Building Docker image..."
-  docker build -t "$IMAGE_NAME:$BRANCH_OR_TAG" . || {
-    echo "ERROR: Docker build failed"; exit 1
-  }
-fi
+# Build image
+echo "Building Docker image..."
+docker build -t "$IMAGE_NAME:$BRANCH_OR_TAG" . || {
+  echo "ERROR: Docker build failed"; exit 1
+}
 
 docker tag "$IMAGE_NAME:$BRANCH_OR_TAG" "$IMAGE_NAME:latest" || {
   echo "ERROR: Docker tag failed"; exit 1
 }
 
-# Ensure network exists
-docker network inspect "$NETWORK_NAME" &>/dev/null || {
+# Ensure network exists - using correct name
+if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
   echo "Creating Docker network..."
   docker network create "$NETWORK_NAME" || {
     echo "ERROR: Network creation failed"; exit 1
   }
-}
+fi
 
 # Start service
 echo "Starting service..."
-docker-compose -f "$DOCKER_COMPOSE_FILE" up -d || {
+docker-compose -f "$DOCKER_COMPOSE_FILE" up -d --force-recreate || {
   echo "ERROR: Service start failed"; exit 1
 }
 
-# Verify
-sleep 5
-docker ps --filter "name=$SERVICE_NAME" | grep -q "Up" || {
+# Verification
+echo "Waiting for service to start..."
+sleep 10
+if ! docker ps --filter "name=$SERVICE_NAME" --format "{{.Status}}" | grep -q "Up"; then
   echo "ERROR: Service not running"
+  echo "=== Service logs ==="
   docker logs "$SERVICE_NAME" --tail 50 || true
   exit 1
-}
+fi
 
 echo "=== Deployment Successful ==="
 echo "Service: $SERVICE_NAME"
 echo "Image: $IMAGE_NAME:latest ($BRANCH_OR_TAG)"
 echo "Network: $NETWORK_NAME"
 echo "Port: 3008"
-docker ps --filter "name=$SERVICE_NAME" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
+echo "=== Running Containers ==="
+docker ps --filter "name=$SERVICE_NAME" --format "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}"
 
 exit 0
