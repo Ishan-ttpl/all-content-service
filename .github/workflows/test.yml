@@ -217,31 +217,32 @@ jobs:
           cat ~/.ssh/known_hosts
 
       - name: Setup SSH key on target for tn-staging
+        if: steps.vars.outputs.environment == 'tn-staging'
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
-            for attempt in {1..5}; do
-              ssh -F /tmp/ssh_config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh" && break
-              echo "SSH mkdir attempt $attempt failed, retrying in 10 seconds..."
-              sleep 10
-            done || { echo "::error::Failed to create .ssh directory for $ENVIRONMENT"; exit 1; }
-            echo "${{ env.public_key }}" > /tmp/id_rsa.pub
-            for attempt in {1..5}; do
-              rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" /tmp/id_rsa.pub target:~/.ssh/id_rsa.pub && break
-              echo "Rsync public key attempt $attempt failed, retrying in 10 seconds..."
-              sleep 10
-            done || { echo "::error::Failed to rsync public key for $ENVIRONMENT"; exit 1; }
-            for attempt in {1..5}; do
-              ssh -F /tmp/ssh_config target "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" && break
-              echo "SSH authorized_keys attempt $attempt failed, retrying in 10 seconds..."
-              sleep 10
-            done || { echo "::error::Failed to update authorized_keys for $ENVIRONMENT"; exit 1; }
-            for attempt in {1..5}; do
-              ssh -F /tmp/ssh_config target "ls -ld ~ ~/.ssh ~/.ssh/authorized_keys && cat ~/.ssh/authorized_keys" && break
-              echo "SSH verify authorized_keys attempt $attempt failed, retrying in 10 seconds..."
-              sleep 10
-            done || { echo "::error::Failed to verify authorized_keys for $ENVIRONMENT"; exit 1; }
-          fi
+          for attempt in {1..5}; do
+            ssh -F /tmp/ssh_config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh" && break
+            echo "SSH mkdir attempt $attempt failed, retrying in 10 seconds..."
+            sleep 10
+          done || { echo "::error::Failed to create .ssh directory"; exit 1; }
+          
+          echo "${{ env.public_key }}" > /tmp/id_rsa.pub
+          for attempt in {1..5}; do
+            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" /tmp/id_rsa.pub target:~/.ssh/id_rsa.pub && break
+            echo "Rsync public key attempt $attempt failed, retrying in 10 seconds..."
+            sleep 10
+          done || { echo "::error::Failed to rsync public key"; exit 1; }
+          
+          for attempt in {1..5}; do
+            ssh -F /tmp/ssh_config target "cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" && break
+            echo "SSH authorized_keys attempt $attempt failed, retrying in 10 seconds..."
+            sleep 10
+          done || { echo "::error::Failed to update authorized_keys"; exit 1; }
+          
+          for attempt in {1..5}; do
+            ssh -F /tmp/ssh_config target "ls -ld ~ ~/.ssh ~/.ssh/authorized_keys && cat ~/.ssh/authorized_keys" && break
+            echo "SSH verify authorized_keys attempt $attempt failed, retrying in 10 seconds..."
+            sleep 10
+          done || { echo "::error::Failed to verify authorized_keys"; exit 1; }
 
       - name: Test host connectivity
         run: |
@@ -251,132 +252,124 @@ jobs:
               ssh -vvv -F /tmp/ssh_config jumphost "echo 'Jump host connection successful'" && break
               echo "Jump host attempt $attempt failed, retrying in 10 seconds..."
               sleep 10
-            done || { echo "::error::Jump host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
-            for attempt in {1..5}; do
-              ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" && break
-              echo "Target host attempt $attempt failed, retrying in 10 seconds..."
-              sleep 10
-            done || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
-          else
-            for attempt in {1..5}; do
-              ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" && break
-              echo "Target host attempt $attempt failed, retrying in 10 seconds..."
-              sleep 10
-            done || { echo "::error::Target host connection failed for $ENVIRONMENT"; cat /tmp/ssh_config; exit 1; }
+            done || { echo "::error::Jump host connection failed"; cat /tmp/ssh_config; exit 1; }
           fi
+          
+          for attempt in {1..5}; do
+            ssh -vvv -F /tmp/ssh_config target "echo 'Target host connection successful'" && break
+            echo "Target host attempt $attempt failed, retrying in 10 seconds..."
+            sleep 10
+          done || { echo "::error::Target host connection failed"; cat /tmp/ssh_config; exit 1; }
 
       - name: Install dos2unix on target server
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
-            for attempt in {1..5}; do
-              ssh -F /tmp/ssh_config target "sudo apt-get update && sudo apt-get install -y dos2unix" && break
-              echo "dos2unix install attempt $attempt failed, retrying in 10 seconds..."
-              sleep 10
-            done || { echo "::warning::Failed to install dos2unix for $ENVIRONMENT"; }
-          fi
+          for attempt in {1..5}; do
+            ssh -F /tmp/ssh_config target "sudo apt-get update && sudo apt-get install -y dos2unix" && break
+            echo "dos2unix install attempt $attempt failed, retrying in 10 seconds..."
+            sleep 10
+          done || { echo "::warning::Failed to install dos2unix"; }
 
       - name: Create and transfer .env file
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           echo "${{ secrets.ENV_FILE }}" > .env
           chmod 600 .env
           ls -l .env
+          
           for attempt in {1..5}; do
             rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" .env target:$TARGET_DIR/.env && break
             echo "Rsync .env attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to rsync .env file for $ENVIRONMENT after 5 attempts"; cat /tmp/ssh_config; exit 1; }
+          done || { echo "::error::Failed to rsync .env file after 5 attempts"; exit 1; }
+          
           for attempt in {1..5}; do
             ssh -vvv -F /tmp/ssh_config target "ls -l $TARGET_DIR/.env && cat $TARGET_DIR/.env" && break
             echo "Verify .env attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to verify .env on target server for $ENVIRONMENT after 5 attempts"; cat /tmp/ssh_config; exit 1; }
+          done || { echo "::error::Failed to verify .env on target server"; exit 1; }
+          
           rm -f .env
 
       - name: Verify docker-compose.yml on server
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "ls -la $TARGET_DIR/docker/ && cat $TARGET_DIR/docker/docker-compose.yml && docker-compose -f $TARGET_DIR/docker/docker-compose.yml config" && break
+            ssh -F /tmp/ssh_config target "ls -la $TARGET_DIR/ && cat $TARGET_DIR/docker-compose.yml && docker-compose -f $TARGET_DIR/docker-compose.yml config" && break
             echo "Verify docker-compose.yml attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to verify docker-compose.yml for $ENVIRONMENT"; exit 1; }
+          done || { echo "::error::Failed to verify docker-compose.yml"; exit 1; }
 
       - name: Clean up Git working directory
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
             ssh -F /tmp/ssh_config target "cd $TARGET_DIR && ls -la && git status && git stash --include-untracked || true && git reset --hard || true && git clean -fd || true" && break
             echo "Git cleanup attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to clean Git working directory for $ENVIRONMENT"; exit 1; }
+          done || { echo "::error::Failed to clean Git working directory"; exit 1; }
 
       - name: Clean up Docker environment
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "cd $TARGET_DIR/docker && docker-compose down --remove-orphans || true && docker rm -f content-service || true && docker ps -a && docker images" && break
+            ssh -F /tmp/ssh_config target "cd $TARGET_DIR && docker-compose down --remove-orphans || true && docker rm -f content-service || true && docker ps -a && docker images" && break
             echo "Docker cleanup attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to clean Docker environment for $ENVIRONMENT"; exit 1; }
+          done || { echo "::error::Failed to clean Docker environment"; exit 1; }
 
       - name: Verify deploy.sh syntax
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           TARGET_DIR="${{ env.target_dir }}"
           dos2unix deploy.sh
           cat deploy.sh
           wc -l deploy.sh
           od -c deploy.sh | head -n 10
-          bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh locally for $ENVIRONMENT"; exit 1; }
+          bash -n deploy.sh || { echo "::error::Syntax error in deploy.sh locally"; exit 1; }
+          
           for attempt in {1..5}; do
-            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/scripts/deploy.sh && break
+            rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/deploy.sh && break
             echo "Rsync deploy.sh attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to rsync deploy.sh for $ENVIRONMENT"; exit 1; }
+          done || { echo "::error::Failed to rsync deploy.sh"; exit 1; }
+          
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/scripts/deploy.sh && cat $TARGET_DIR/scripts/deploy.sh && wc -l $TARGET_DIR/scripts/deploy.sh && od -c $TARGET_DIR/scripts/deploy.sh | head -n 10 && bash -n $TARGET_DIR/scripts/deploy.sh" && break
+            ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/deploy.sh && cat $TARGET_DIR/deploy.sh && wc -l $TARGET_DIR/deploy.sh && od -c $TARGET_DIR/deploy.sh | head -n 10 && bash -n $TARGET_DIR/deploy.sh" && break
             echo "Verify deploy.sh attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Syntax error in deploy.sh on target server for $ENVIRONMENT"; exit 1; }
+          done || { echo "::error::Syntax error in deploy.sh on target server"; exit 1; }
 
       - name: Deploy or rollback
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           ACTION="${{ steps.vars.outputs.action }}"
           TARGET_DIR="${{ env.target_dir }}"
+          
           for attempt in {1..5}; do
             if [[ "$ACTION" == "deploy" ]]; then
               BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/scripts/deploy.sh && $TARGET_DIR/scripts/deploy.sh $TARGET_DIR $BRANCH deploy && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
+              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $BRANCH deploy && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
             elif [[ "$ACTION" == "rollback" ]]; then
               ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
               if [[ -z "$ROLLBACK_TAG" ]]; then
-                echo "::error::Rollback tag required for $ENVIRONMENT"
+                echo "::error::Rollback tag required"
                 exit 1
               fi
-              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/scripts/deploy.sh && $TARGET_DIR/scripts/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
+              ssh -F /tmp/ssh_config target "chmod +x $TARGET_DIR/deploy.sh && $TARGET_DIR/deploy.sh $TARGET_DIR $ROLLBACK_TAG rollback && docker ps -a && docker images && docker logs content-service || echo 'No logs available'" && break
             else
-              echo "::error::Invalid action: $ACTION for $ENVIRONMENT"
+              echo "::error::Invalid action: $ACTION"
               exit 1
             fi
             echo "Deploy/rollback attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to deploy/rollback for $ENVIRONMENT after 5 attempts"; exit 1; }
+          done || { echo "::error::Failed to deploy/rollback after 5 attempts"; exit 1; }
 
       - name: Verify container logs
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "docker logs content-service || echo 'Failed to get container logs for $ENVIRONMENT'" && break
+            ssh -F /tmp/ssh_config target "docker logs content-service || echo 'Failed to get container logs'" && break
             echo "Verify container logs attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
-          done || { echo "::error::Failed to verify container logs for $ENVIRONMENT"; exit 1; }
+          done || { echo "::error::Failed to verify container logs"; exit 1; }
 
       - name: Notify Slack
         if: always()
