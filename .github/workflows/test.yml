@@ -216,7 +216,6 @@ Host target
   ServerAliveInterval 180
   ServerAliveCountMax 15
 EOL
-
               ;;
             *)
               echo "::error::Unknown environment: $ENVIRONMENT"
