@@ -14,7 +14,7 @@ on:
         required: true
         default: 'deploy'
         type: choice
-        options:
+        options: # <--- Corrected: options directly under 'action'
           - deploy
           - rollback
       environment:
@@ -22,7 +22,7 @@ on:
         required: true
         default: 'tn-staging'
         type: choice
-        options:
+        options: # <--- Corrected: options directly under 'environment'
           - test-rig-dev
           - test-rig-prod
           - tn-dev
@@ -31,9 +31,11 @@ on:
         description: 'Branch to deploy (only for deploy)'
         required: false
         default: 'main'
+        type: string # Added type: string, good practice for text inputs
       rollback_tag:
         description: 'Tag to rollback to (only for rollback)'
         required: false
+        type: string # Added type: string
 
 jobs:
   deploy-or-rollback:
