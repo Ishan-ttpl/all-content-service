@@ -32,6 +32,187 @@ on:
         required: false
         default: 'main'
       rollback_tag:
+        description: 'Tag to rollback to (only for rollback)'
+        required: false
+
+jobs:
+  deploy-or-rollback:
+    runs-on: ubuntu-22.04
+    environment: ${{ github.event.inputs.environment || 'tn-staging' }}
+
+    steps:
+      - name: Determine environment and action
+        id: vars
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_PREFIX="${GITHUB_REF#refs/tags/deploy-}"
+            case "$TAG_PREFIX" in
+              test-rig-dev*) ENVIRONMENT="test-rig-dev";;
+              test-rig-prod*) ENVIRONMENT="test-rig-prod";;
+              tn-dev*) ENVIRONMENT="tn-dev";;
+              tn-staging*) ENVIRONMENT="tn-staging";;
+              *) echo "::error::Invalid tag format"; exit 1;;
+            esac
+            ACTION="deploy"
+          else
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+            ACTION="${{ github.event.inputs.action }}"
+          fi
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          echo "action=$ACTION" >> $GITHUB_OUTPUT
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify repository structure
+        run: |
+          ls -la
+          [ ! -f "deploy.sh" ] && { echo "::error::deploy.sh not found"; exit 1; }
+          [ ! -f "docker-compose.yml" ] && { echo "::error::docker-compose.yml not found"; exit 1; }
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > /tmp/id_rsa
+          chmod 600 /tmp/id_rsa
+          ssh-keygen -y -f /tmp/id_rsa > /tmp/id_rsa.pub
+          echo "public_key=$(cat /tmp/id_rsa.pub)" >> $GITHUB_ENV
+
+          case "${{ steps.vars.outputs.environment }}" in
+            test-rig-dev)
+              HOST="${{ secrets.TEST_RIG_DEV_HOST }}"
+              TARGET_DIR="/home/sudeepr/git/all-content-service"
+              ;;
+            test-rig-prod)
+              HOST="${{ secrets.TEST_RIG_PROD_HOST }}"
+              TARGET_DIR="/home/sudeepr/all-services/all-content-service"
+              ;;
+            tn-dev)
+              HOST="${{ secrets.TN_DEV_HOST }}"
+              TARGET_DIR="/home/alldevuser/git/all-content-service"
+              ;;
+            tn-staging)
+              HOST="${{ secrets.TN_STAGING_HOST }}"
+              JUMPHOST="${{ secrets.JUMPHOST }}"
+              TARGET_DIR="/home/deployment/all-services/all-content-service"
+              JUMPHOST_USER="${JUMPHOST%%@*}"
+              JUMPHOST_HOST="${JUMPHOST##*@}"
+              ;;
+          esac
+
+          USER="${HOST%%@*}"
+          HOSTNAME="${HOST##*@}"
+          
+          if [[ "${{ steps.vars.outputs.environment }}" == "tn-staging" ]]; then
+            cat <<EOF > /tmp/ssh_config
+Host jumphost
+  HostName $JUMPHOST_HOST
+  User $JUMPHOST_USER
+  IdentityFile /tmp/id_rsa
+  StrictHostKeyChecking no
+Host target
+  HostName $HOSTNAME
+  User $USER
+  IdentityFile /tmp/id_rsa
+  ProxyJump jumphost
+  StrictHostKeyChecking no
+EOF
+          else
+            cat <<EOF > /tmp/ssh_config
+Host target
+  HostName $HOSTNAME
+  User $USER
+  IdentityFile /tmp/id_rsa
+  StrictHostKeyChecking no
+EOF
+          fi
+          
+          chmod 600 /tmp/ssh_config
+          echo "remote_user=$USER" >> $GITHUB_ENV
+          echo "target_dir=$TARGET_DIR" >> $GITHUB_ENV
+
+      - name: Transfer files
+        run: |
+          for file in deploy.sh docker-compose.yml; do
+            rsync -avz -e "ssh -F /tmp/ssh_config" $file target:${{ env.target_dir }}/ || {
+              echo "::error::Failed to transfer $file"; exit 1
+            }
+          done
+
+      - name: Deploy/Rollback
+        run: |
+          ACTION="${{ steps.vars.outputs.action }}"
+          TARGET_DIR="${{ env.target_dir }}"
+          
+          if [[ "$ACTION" == "deploy" ]]; then
+            BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+            ssh -F /tmp/ssh_config target "
+              cd $TARGET_DIR && \
+              chmod +x deploy.sh && \
+              ./deploy.sh \"$TARGET_DIR\" \"$BRANCH\" deploy
+            " || { echo "::error::Deployment failed"; exit 1; }
+          else
+            TAG="${{ github.event.inputs.rollback_tag }}"
+            [ -z "$TAG" ] && { echo "::error::Rollback tag required"; exit 1; }
+            ssh -F /tmp/ssh_config target "
+              cd $TARGET_DIR && \
+              chmod +x deploy.sh && \
+              ./deploy.sh \"$TARGET_DIR\" \"$TAG\" rollback
+            " || { echo "::error::Rollback failed"; exit 1; }
+          fi
+
+      - name: Verify deployment
+        run: |
+          ssh -F /tmp/ssh_config target "
+            docker ps --filter name=content-service
+            docker logs content-service --tail 20
+          " || { echo "::error::Verification failed"; exit 1; }
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{\"text\":\"${{ job.status == 'success' && ':white_check_mark:' || ':x:' }} Deployment ${{ job.status }} for all-content-service\n*Environment:* ${{ steps.vars.outputs.environment }}\n*Action:* ${{ steps.vars.outputs.action }}\n*Ref:* ${{ github.ref_name }}\"}" \
+          "${{ secrets.SLACK_WEBHOOK_URL }}"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f /tmp/id_rsa /tmp/ssh_configname: Deploy or Rollback All-Content-Service
+
+on:
+  push:
+    tags:
+      - 'deploy-test-rig-dev-*'
+      - 'deploy-test-rig-prod-*'
+      - 'deploy-tn-dev-*'
+      - 'deploy-tn-staging-*'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - rollback
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'tn-staging'
+        type: choice
+        options:
+          - test-rig-dev
+          - test-rig-prod
+          - tn-dev
+          - tn-staging
+      branch:
+        description: 'Branch to deploy (only for deploy)'
+        required: false
+        default: 'main'
+      rollback_tag:
         description: 'Tag to rollback to (only for rollback, e.g., deploy-tn-staging-v1.0.0)'
         required: false
 
