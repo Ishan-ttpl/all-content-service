@@ -144,14 +144,18 @@ jobs:
           ssh -F /tmp/ssh_config target "sudo docker logs $SERVICE_NAME --tail 100"
 
       - name: Notify Slack
-        if: always() && secrets.SLACK_WEBHOOK_URL != ''
+        if: always()
         run: |
-          STATUS="${{ job.status }}"
-          EMOJI=":x:"
-          [[ "$STATUS" == "success" ]] && EMOJI=":white_check_mark:"
-          MSG="*All-Content-Service Deployment: ${STATUS^} $EMOJI*\n*Environment:* ${{ steps.vars.outputs.environment }}\n*Action:* ${{ steps.vars.outputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          [[ "${{ steps.vars.outputs.action }}" == "rollback" && "${{ github.event.inputs.rollback_tag }}" != "" ]] && MSG+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
-          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$MSG\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
+          if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
+            STATUS="${{ job.status }}"
+            EMOJI=":x:"
+            [[ "$STATUS" == "success" ]] && EMOJI=":white_check_mark:"
+            MSG="*All-Content-Service Deployment: ${STATUS^} $EMOJI*\n*Environment:* ${{ steps.vars.outputs.environment }}\n*Action:* ${{ steps.vars.outputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            [[ "${{ steps.vars.outputs.action }}" == "rollback" && "${{ github.event.inputs.rollback_tag }}" != "" ]] && MSG+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
+            curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$MSG\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
+          else
+            echo "SLACK_WEBHOOK_URL not configured; skipping Slack notification."
+          fi
 
       - name: Cleanup
         if: always()
