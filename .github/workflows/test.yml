@@ -43,26 +43,28 @@ jobs:
           echo "${{ secrets.SSH_KEY }}" > key.pem
           chmod 600 key.pem
 
+      # Use scp-action for a single fast file transfer instead of manual rsync
       - name: Copy deploy.sh to server
-        run: |
-          rsync -e "ssh -i key.pem -o StrictHostKeyChecking=no" \
-            scripts/deploy.sh \
-            deployment@${{ secrets.TN_STAGING_HOST }}:/home/deployment/all-services/all-content-service/scripts/deploy.sh
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.TN_STAGING_HOST }}
+          username: deployment
+          key: ${{ secrets.SSH_KEY }}
+          source: scripts/deploy.sh
+          target: /home/deployment/all-services/all-content-service/scripts/
 
       - name: Execute remote deploy.sh
         env:
           DOCKER_COMPOSE_CONTENT_B64: ${{ secrets.DOCKER_COMPOSE_CONTENT_B64 }}
           ENV_FILE_B64:             ${{ secrets.ENV_FILE_B64 || '' }}
         run: |
-          # Decide ref: use rollback_tag if rollback, else branch
+          # Decide ref
           if [[ "${{ github.event.inputs.action }}" == "rollback" ]]; then
             REF="${{ github.event.inputs.rollback_tag }}"
           else
             REF="${{ github.event.inputs.branch }}"
           fi
-          if [[ -z "$REF" ]]; then
-            echo "::error::No branch or rollback_tag provided for action ${{ github.event.inputs.action }}"; exit 1
-          fi
+          [[ -z "$REF" ]] && echo "::error::No branch/tag provided" && exit 1
 
           ssh -i key.pem -o StrictHostKeyChecking=no \
             deployment@${{ secrets.TN_STAGING_HOST }} \
@@ -84,10 +86,10 @@ jobs:
             STATUS="${{ job.status }}"
             EMOJI=":x:"; [[ "$STATUS" == "success" ]] && EMOJI=":white_check_mark:"
             MSG="*All-Content-Service Deployment ${STATUS^}*  
-          *Env:* ${{ github.event.inputs.environment }}  
-          *Action:* ${{ github.event.inputs.action }}  
-          *Ref:* ${{ github.ref_name }}  
-          *Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            *Env:* ${{ github.event.inputs.environment }}  
+            *Action:* ${{ github.event.inputs.action }}  
+            *Ref:* ${{ github.ref_name }}  
+            *Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             [[ "${{ github.event.inputs.action }}" == "rollback" && -n "${{ github.event.inputs.rollback_tag }}" ]] && \
               MSG+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
             curl -X POST -H 'Content-Type: application/json' \
