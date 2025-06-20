@@ -245,7 +245,7 @@ jobs:
           cat docker-compose.yml
 
       - name: Create and transfer .env file
-        if: secrets.ENV_FILE != ''
+        if: ${{ secrets.ENV_FILE != '' }}
         run: |
           TARGET_DIR="${{ env.target_dir }}"
           echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
