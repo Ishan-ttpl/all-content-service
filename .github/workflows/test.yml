@@ -290,14 +290,20 @@ jobs:
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           ACTION="${{ steps.vars.outputs.action }}"
           TARGET_DIR="${{ env.target_dir }}"
+          
+          # Determine branch name safely
+          BRANCH="${{ github.event.inputs.branch }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH="${{ github.ref_name }}"
+          fi
+      
           for attempt in {1..5}; do
             if [[ "$ACTION" == "deploy" ]]; then
-              BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
               ssh -F /tmp/ssh_config target "cd $TARGET_DIR && sudo -n /bin/bash ./deploy.sh \"$TARGET_DIR\" \"$BRANCH\" deploy && docker ps -a && docker logs content-service || echo 'No logs available'" && break
             elif [[ "$ACTION" == "rollback" ]]; then
               ROLLBACK_TAG="${{ github.event.inputs.rollback_tag }}"
-              if [[ -z "$ROLLBACK_TAG" ]]; then
-                echo "::error::Rollback tag required"
+              if [[ -z \"$ROLLBACK_TAG\" ]]; then
+                echo \"::error::Rollback tag required\"
                 exit 1
               fi
               ssh -F /tmp/ssh_config target "cd $TARGET_DIR && sudo -n /bin/bash ./deploy.sh \"$TARGET_DIR\" \"$ROLLBACK_TAG\" rollback && docker ps -a && docker logs content-service || echo 'No logs available'" && break
