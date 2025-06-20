@@ -25,9 +25,11 @@ on:
         description: 'Branch to deploy (deploy only)'
         required: false
         default: 'main'
+        type: string
       rollback_tag:
         description: 'Tag to rollback to (rollback only)'
         required: false
+        type: string
 
 jobs:
   deploy:
@@ -35,10 +37,13 @@ jobs:
     environment: ${{ github.event.inputs.environment }}
     steps:
 
-      - name: Install SSH & rsync
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install rsync and SSH client
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-client rsync
+          sudo apt-get install -y openssh-client rsync dos2unix
 
       - name: Prepare SSH key
         run: |
@@ -51,17 +56,30 @@ jobs:
           TARGET="${{ secrets.TN_STAGING_HOST }}"
           mkdir -p ~/.ssh
           printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  StrictHostKeyChecking no\n" \
-            "${JUMP#*@}" "${JUMP%@*}" "${PWD}" > ~/.ssh/config
+            "${JUMP#*@}" "${JUMP%@*}" "$PWD" > ~/.ssh/config
           printf "Host target\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n" \
-            "${TARGET#*@}" "${TARGET%@*}" "${PWD}" >> ~/.ssh/config
+            "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-      - name: Copy deploy.sh to target
+      - name: Add known hosts
         run: |
+          JUMP="${{ secrets.JUMPHOST }}"
+          TARGET="${{ secrets.TN_STAGING_HOST }}"
+          ssh-keyscan "${JUMP#*@}" >> ~/.ssh/known_hosts || true
+          ssh-keyscan "${TARGET#*@}" >> ~/.ssh/known_hosts || true
+
+      - name: Transfer deploy.sh to target
+        run: |
+          TARGET_DIR="/home/deployment/all-services/all-content-service"
+          mkdir -p scripts/
+          echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" | base64 --decode > scripts/deploy.sh
+          chmod +x scripts/deploy.sh
+          dos2unix scripts/deploy.sh
+
           rsync -avz \
             -e "ssh -F ~/.ssh/config" \
             scripts/deploy.sh \
-            target:/home/deployment/all-services/all-content-service/scripts/
+            target:"$TARGET_DIR/scripts/"
 
       - name: Execute remote deploy.sh
         env:
@@ -73,32 +91,17 @@ jobs:
           else
             REF="${{ github.event.inputs.branch }}"
           fi
+
           if [[ -z "$REF" ]]; then
             echo "::error::No branch or rollback_tag provided"; exit 1
           fi
-          ssh -F ~/.ssh/config target \
-            "export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}' \
-             ENV_FILE_B64='${ENV_FILE_B64}' && \
-             /home/deployment/all-services/all-content-service/scripts/deploy.sh \
-               /home/deployment/all-services/all-content-service \
-               \"$REF\" \
-               \"${{ github.event.inputs.action }}\""
 
-      - name: Cleanup local key
-        if: always()
-        run: rm -f key.pem
-
-      - name: Notify Slack
-        if: always()
-        run: |
-          if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
-            STATUS="${{ job.status }}"
-            EMOJI=":x:"; [[ "$STATUS" == "success" ]] && EMOJI=":white_check_mark:"
-            MSG="*Deployment ${STATUS^} $EMOJI*\n*Env:* ${{ github.event.inputs.environment }}\n*Action:* ${{ github.event.inputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            if [[ "${{ github.event.inputs.action }}" == "rollback" && -n "${{ github.event.inputs.rollback_tag }}" ]]; then
-              MSG+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
-            fi
-            curl -X POST -H 'Content-Type: application/json' --data "{\"text\":\"$MSG\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
-          else
-            echo "SLACK_WEBHOOK_URL not set; skipping notification"
-          fi
+          ssh -F ~/.ssh/config target << EOF
+            set -e
+            mkdir -p /home/deployment/all-services/all-content-service/scripts/
+            cd /home/deployment/all-services/all-content-service
+            export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}'
+            export ENV_FILE_B64='${ENV_FILE_B64}'
+            echo "Running deployment script..."
+            sudo bash scripts/deploy.sh "$PWD" "$REF" "${{ github.event.inputs.action }}"
+            EOF
