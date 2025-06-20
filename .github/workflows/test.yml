@@ -33,7 +33,7 @@ on:
         default: 'main'
         type: string
       rollback_tag:
-        description: 'Tag to rollback to (only for rollback, e.g., deploy-tn-staging-v1.0.0)'
+        description: 'Tag to rollback to (e.g., deploy-tn-staging-v1.0.0)'
         required: false
         type: string
 
@@ -42,19 +42,21 @@ jobs:
     runs-on: ubuntu-22.04
     environment: ${{ github.event.inputs.environment || 'tn-staging' }}
     steps:
+
       - name: Determine environment and action
         id: vars
         run: |
-          # Determine environment and action based on push tag or workflow_dispatch input
-          ENVIRONMENT=""
-          ACTION=""
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG_PREFIX="${GITHUB_REF#refs/tags/deploy-}"
-            if [[ "$TAG_PREFIX" == "test-rig-dev"* ]]; then ENVIRONMENT="test-rig-dev"
-            elif [[ "$TAG_PREFIX" == "test-rig-prod"* ]]; then ENVIRONMENT="test-rig-prod"
-            elif [[ "$TAG_PREFIX" == "tn-dev"* ]]; then ENVIRONMENT="tn-dev"
-            elif [[ "$TAG_PREFIX" == "tn-staging"* ]]; then ENVIRONMENT="tn-staging"
-            else echo "::error::Invalid tag format. Expected 'deploy-<env>-*'."; exit 1; fi
+          EVENT_NAME="${{ github.event_name }}"
+          REF="${{ github.ref }}"
+          if [[ "$EVENT_NAME" == "push" && "$REF" == refs/tags/* ]]; then
+            TAG="${REF#refs/tags/deploy-}"
+            case "$TAG" in
+              test-rig-dev*) ENVIRONMENT="test-rig-dev" ;;
+              test-rig-prod*) ENVIRONMENT="test-rig-prod" ;;
+              tn-dev*) ENVIRONMENT="tn-dev" ;;
+              tn-staging*) ENVIRONMENT="tn-staging" ;;
+              *) echo "::error::Invalid tag format."; exit 1 ;;
+            esac
             ACTION="deploy"
           else
             ENVIRONMENT="${{ github.event.inputs.environment }}"
@@ -62,156 +64,107 @@ jobs:
           fi
           echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
           echo "action=$ACTION" >> "$GITHUB_OUTPUT"
-          echo "Workflow inputs (action: ${{ github.event.inputs.action }}, env: ${{ steps.vars.outputs.environment }}, branch: ${{ github.event.inputs.branch }}, rollback_tag: ${{ github.event.inputs.rollback_tag }})"
+          echo "Workflow Inputs: Action=$ACTION, Environment=$ENVIRONMENT, Branch=${{ github.event.inputs.branch }}, Rollback Tag=${{ github.event.inputs.rollback_tag }}"
 
-      - name: Install Dependencies & Validate Secrets & Generate Files
+      - name: Install Dependencies & Prepare Files
         run: |
-          # Install necessary tools
           sudo apt-get update && sudo apt-get install -y rsync dos2unix
 
-          # Validate required secrets are present (Base64 encoded values will be validated implicitly on decode)
-          MISSING_SECRETS=""
-          [[ -z "${{ secrets.SSH_KEY }}" ]] && MISSING_SECRETS+=" SSH_KEY"
-          [[ -z "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" ]] && MISSING_SECRETS+=" DEPLOY_SCRIPT_CONTENT"
-          [[ -z "${{ secrets.DOCKER_COMPOSE_CONTENT }}" ]] && MISSING_SECRETS+=" DOCKER_COMPOSE_CONTENT"
-          if [[ -n "$MISSING_SECRETS" ]]; then echo "::error::Missing required secrets: $MISSING_SECRETS"; exit 1; fi
+          for secret in SSH_KEY DEPLOY_SCRIPT_CONTENT DOCKER_COMPOSE_CONTENT; do
+            [[ -z "${{ secrets[$secret] }}" ]] && echo "::error::Missing secret: $secret" && exit 1
+          done
 
-          # Decode SSH key and save to temp file
-          echo "${{ secrets.SSH_KEY }}" | base64 -d > /tmp/id_rsa
-          chmod 600 /tmp/id_rsa
-          ssh-keygen -y -f /tmp/id_rsa > /tmp/id_rsa.pub
+          echo "${{ secrets.SSH_KEY }}" | base64 -d > /tmp/id_rsa && chmod 600 /tmp/id_rsa && ssh-keygen -y -f /tmp/id_rsa > /tmp/id_rsa.pub
           echo "public_key=$(cat /tmp/id_rsa.pub)" >> "$GITHUB_ENV"
 
-          # Decode deploy script and docker-compose.yml content, then create local files
           echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" | base64 -d > deploy.sh
           echo "${{ secrets.DOCKER_COMPOSE_CONTENT }}" | base64 -d > docker-compose.yml
           chmod +x deploy.sh
           dos2unix deploy.sh docker-compose.yml
 
-          # Decode .env file content if provided, then create local file
-          if [[ -n "${{ secrets.ENV_FILE }}" ]]; then
-            echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
-            chmod 600 .env
-            dos2unix .env
-          else
-            echo "::warning::ENV_FILE secret is empty or not provided. Skipping .env file creation."
-          fi
+          [[ -n "${{ secrets.ENV_FILE }}" ]] && echo "${{ secrets.ENV_FILE }}" | base64 -d > .env && chmod 600 .env && dos2unix .env
 
-          # Output content for debugging
-          echo "--- deploy.sh content (first 20 lines) ---"; head -n 20 deploy.sh
-          echo "--- docker-compose.yml content ---"; cat docker-compose.yml
-          if [[ -f ".env" ]]; then echo "--- .env content ---"; cat .env; fi
+          echo "--- deploy.sh (first 20 lines) ---"; head -n 20 deploy.sh
+          echo "--- docker-compose.yml ---"; cat docker-compose.yml
+          [[ -f ".env" ]] && echo "--- .env ---"; cat .env
 
-      - name: Set up SSH config and Test Connectivity
+      - name: Set up SSH config and test connectivity
         id: ssh_setup
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          mkdir -p ~/.ssh # Ensure .ssh directory exists for known_hosts
+          ENV="${{ steps.vars.outputs.environment }}"
+          mkdir -p ~/.ssh
 
-          # Determine host details and generate SSH config
-          case "$ENVIRONMENT" in
-            "test-rig-dev" | "test-rig-prod" | "tn-dev")
-              HOST="${{ secrets.${{ env.ENVIRONMENT == 'test-rig-dev' && 'TEST_RIG_DEV_HOST' || (env.ENVIRONMENT == 'test-rig-prod' && 'TEST_RIG_PROD_HOST') || 'TN_DEV_HOST' }} }}"
-              TARGET_DIR="/home/${HOST%%@*}/$(echo "$ENVIRONMENT" | sed 's/test-rig-//' | sed 's/tn-//')user/all-content-service" # Simplified target_dir based on env
-              if [[ "$ENVIRONMENT" == "test-rig-dev" ]]; then TARGET_DIR="/home/sudeepr/git/all-content-service"; fi # Override for specific case
-              if [[ "$ENVIRONMENT" == "test-rig-prod" ]]; then TARGET_DIR="/home/sudeepr/all-services/all-content-service"; fi # Override for specific case
+          if [[ "$ENV" == "tn-staging" ]]; then
+            HOST="${{ secrets.TN_STAGING_HOST }}"
+            JUMPHOST="${{ secrets.JUMPHOST }}"
+            [[ -z "$JUMPHOST" ]] && echo "::error::Missing JUMPHOST for tn-staging" && exit 1
+            TARGET_DIR="/home/deployment/all-services/all-content-service"
+            printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\nHost target\n  HostName %s\n  User %s\n  IdentityFile /tmp/id_rsa\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" "${JUMPHOST#*@}" "${JUMPHOST%@*}" "${HOST#*@}" "${HOST%@*}" > /tmp/ssh_config
+            ssh-keyscan -H "${JUMPHOST#*@}" >> ~/.ssh/known_hosts || true
+            ssh-keyscan -H "${HOST#*@}" >> ~/.ssh/known_hosts || true
+          else
+            case "$ENV" in
+              test-rig-dev) HOST="${{ secrets.TEST_RIG_DEV_HOST }}"; TARGET_DIR="/home/sudeepr/git/all-content-service" ;;
+              test-rig-prod) HOST="${{ secrets.TEST_RIG_PROD_HOST }}"; TARGET_DIR="/home/sudeepr/all-services/all-content-service" ;;
+              tn-dev) HOST="${{ secrets.TN_DEV_HOST }}"; TARGET_DIR="/home/ubuntu/tnuser/all-content-service" ;;
+              *) echo "::error::Invalid environment: $ENV"; exit 1 ;;
+            esac
+            printf "Host target\n  HostName %s\n  User %s\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" "${HOST#*@}" "${HOST%@*}" > /tmp/ssh_config
+            ssh-keyscan -H "${HOST#*@}" >> ~/.ssh/known_hosts || true
+          fi
 
-              echo -e "Host target\n  HostName ${HOST##*@}\n  User ${HOST%%@*}\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15" > /tmp/ssh_config
-              ssh-keyscan -H "${HOST##*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
-              ;;
-            "tn-staging")
-              HOST="${{ secrets.TN_STAGING_HOST }}"
-              JUMPHOST="${{ secrets.JUMPHOST }}"
-              TARGET_DIR="/home/deployment/all-services/all-content-service"
-              
-              # Validate jump host secret
-              [[ -z "$JUMPHOST" ]] && { echo "::error::JUMPHOST secret missing for tn-staging."; exit 1; }
-              
-              echo -e "Host jumphost\n  HostName ${JUMPHOST##*@}\n  User ${JUMPHOST%%@*}\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\nHost target\n  HostName ${HOST##*@}\n  User ${HOST%%@*}\n  IdentityFile /tmp/id_rsa\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15" > /tmp/ssh_config
-              ssh-keyscan -H "${JUMPHOST##*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
-              ssh-keyscan -H "${HOST##*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
-              ;;
-            *) echo "::error::Unknown environment: $ENVIRONMENT"; exit 1 ;;
-          esac
           chmod 600 /tmp/ssh_config
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
 
-          # Setup SSH key on target (if tn-staging) for subsequent rsync/ssh commands
-          if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
-            for attempt in {1..5}; do
-              ssh -vvv -F /tmp/ssh_config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${{ env.public_key }}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" && break
-              echo "SSH key setup attempt $attempt failed, retrying in 10s..." && sleep 10
-            done || { echo "::error::Failed to setup authorized_keys on target."; exit 1; }
-          fi
+          [[ "$ENV" == "tn-staging" ]] && ssh -F /tmp/ssh_config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${{ env.public_key }}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || true
 
-          # Test host connectivity for jump host (if applicable) and target
-          if [[ "$ENVIRONMENT" == "tn-staging" ]]; then
-            for attempt in {1..5}; do ssh -vvv -F /tmp/ssh_config jumphost "echo 'Jump host connected'" && break; echo "Jump host attempt $attempt failed, retrying..."; sleep 10; done || { echo "::error::Jump host connection failed."; cat /tmp/ssh_config; exit 1; }
-          fi
-          for attempt in {1..5}; do ssh -vvv -F /tmp/ssh_config target "echo 'Target host connected'" && break; echo "Target host attempt $attempt failed, retrying..."; sleep 10; done || { echo "::error::Target host connection failed."; cat /tmp/ssh_config; exit 1; }
+          for attempt in {1..5}; do ssh -F /tmp/ssh_config target "echo connected" && break || echo "Retrying SSH ($attempt)..."; sleep 10; done || { echo "::error::SSH connection failed"; exit 1; }
 
-      - name: Transfer Files to Target & Execute Deploy Script
+      - name: Transfer Files & Run Script
         run: |
-          TARGET_DIR="${{ env.target_dir }}"
           ACTION="${{ steps.vars.outputs.action }}"
+          TARGET_DIR="${{ env.target_dir }}"
 
-          # Create target directory for scripts if it doesn't exist
-          for attempt in {1..5}; do ssh -F /tmp/ssh_config target "mkdir -p $TARGET_DIR/scripts" && break; echo "Mkdir scripts attempt $attempt failed, retrying..."; sleep 10; done || { echo "::error::Failed to create scripts dir on target."; exit 1; }
+          ssh -F /tmp/ssh_config target "mkdir -p $TARGET_DIR/scripts"
 
-          # Transfer files
-          for attempt in {1..5}; do rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" deploy.sh target:$TARGET_DIR/scripts/deploy.sh && break; echo "Rsync deploy.sh attempt $attempt failed, retrying..."; sleep 10; done || { echo "::error::Failed to rsync deploy.sh"; exit 1; }
-          for attempt in {1..5}; do rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" docker-compose.yml target:$TARGET_DIR/docker-compose.yml && break; echo "Rsync docker-compose.yml attempt $attempt failed, retrying..."; sleep 10; done || { echo "::error::Failed to rsync docker-compose.yml"; exit 1; }
-          if [[ -f ".env" ]]; then
-            for attempt in {1..5}; do rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" .env target:$TARGET_DIR/.env && break; echo "Rsync .env attempt $attempt failed, retrying..."; sleep 10; done || { echo "::error::Failed to rsync .env"; exit 1; }
-          fi
+          for file in deploy.sh docker-compose.yml; do
+            for attempt in {1..5}; do
+              rsync -avz -e "ssh -F /tmp/ssh_config" $file target:$TARGET_DIR/$( [[ $file == "deploy.sh" ]] && echo "scripts/" || echo "" )$file && break
+              echo "Rsync $file failed, retrying ($attempt)..."; sleep 10
+            done || { echo "::error::Failed to transfer $file"; exit 1; }
+          done
 
-          # Convert line endings on the remote server and verify existence
-          for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/scripts/deploy.sh $TARGET_DIR/docker-compose.yml $(if [[ -f "$TARGET_DIR/.env" ]]; then echo "$TARGET_DIR/.env"; fi) && ls -la $TARGET_DIR/scripts/deploy.sh $TARGET_DIR/docker-compose.yml $(if [[ -f "$TARGET_DIR/.env" ]]; then echo "$TARGET_DIR/.env"; fi)" && break
-            echo "Line ending conversion/verification attempt $attempt failed, retrying..."; sleep 10
-          done || { echo "::error::Failed to verify transferred files on target"; exit 1; }
+          [[ -f ".env" ]] && rsync -avz -e "ssh -F /tmp/ssh_config" .env target:$TARGET_DIR/.env || echo "No .env to transfer"
 
-          # Prepare BRANCH_OR_TAG for execution
+          ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/scripts/deploy.sh $TARGET_DIR/docker-compose.yml $TARGET_DIR/.env 2>/dev/null; ls -l $TARGET_DIR/scripts/deploy.sh"
+
           BRANCH_OR_TAG="${{ github.event.inputs.branch || github.ref_name }}"
-          if [[ "$ACTION" == "rollback" ]]; then
-            BRANCH_OR_TAG="${{ github.event.inputs.rollback_tag }}"
-            [[ -z "$BRANCH_OR_TAG" ]] && { echo "::error::Rollback tag required for rollback action."; exit 1; }
-          fi
+          [[ "$ACTION" == "rollback" ]] && BRANCH_OR_TAG="${{ github.event.inputs.rollback_tag }}"
+          [[ -z "$BRANCH_OR_TAG" ]] && echo "::error::Rollback tag is required" && exit 1
 
-          # Execute deploy script on target
-          echo "Executing deploy.sh on target..."
-          for attempt in {1..5}; do
-            ssh -F /tmp/ssh_config target "sudo bash $TARGET_DIR/scripts/deploy.sh \"$TARGET_DIR\" \"$BRANCH_OR_TAG\" \"$ACTION\"" && break
-            echo "Execution attempt $attempt failed, retrying..."; sleep 10
-          done || { echo "::error::Failed to execute deploy.sh on target after 5 attempts"; exit 1; }
+          ssh -F /tmp/ssh_config target "sudo bash $TARGET_DIR/scripts/deploy.sh \"$TARGET_DIR\" \"$BRANCH_OR_TAG\" \"$ACTION\""
 
-      - name: Final Container Status Verification and Logs
+      - name: Verify Container Status
         run: |
           SERVICE_NAME="content-service"
-          echo "Verifying $SERVICE_NAME container status..."
           for attempt in {1..15}; do
-            if ssh -F /tmp/ssh_config target "sudo docker ps --filter name=$SERVICE_NAME --format '{{.Status}}' | grep -q 'Up'"; then
-              echo "$SERVICE_NAME container is running and healthy."
-              ssh -F /tmp/ssh_config target "sudo docker logs $SERVICE_NAME --tail 100" # Fetch last 100 lines of logs
-              exit 0 # Success
-            fi
-            echo "$SERVICE_NAME container not ready. Retrying in 10s..."
-            sleep 10
-          done
-          echo "::error::Failed to verify $SERVICE_NAME container status after 15 attempts."; exit 1
+            ssh -F /tmp/ssh_config target "sudo docker ps --filter name=$SERVICE_NAME --format '{{.Status}}'" | grep -q "Up" && break
+            echo "Waiting for $SERVICE_NAME... ($attempt)"; sleep 10
+          done || { echo "::error::$SERVICE_NAME not running after retries"; exit 1; }
+          ssh -F /tmp/ssh_config target "sudo docker logs $SERVICE_NAME --tail 100"
 
       - name: Notify Slack
         if: always() && secrets.SLACK_WEBHOOK_URL != ''
         run: |
-          STATUS="${{ job.status == 'success' && 'Succeeded' || 'Failed' }}"
-          EMOJI="${{ job.status == 'success' && ':white_check_mark:' || ':x:' }}"
-          SLACK_MESSAGE="*All-Content-Service Deployment Status: $STATUS $EMOJI*\n*Environment:* ${{ steps.vars.outputs.environment }}\n*Action:* ${{ steps.vars.outputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run URL:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [[ "${{ steps.vars.outputs.action }}" == "rollback" && -n "${{ github.event.inputs.rollback_tag }}" ]]; then SLACK_MESSAGE+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"; fi
-          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$SLACK_MESSAGE\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
+          STATUS="${{ job.status }}"
+          EMOJI=":x:"
+          [[ "$STATUS" == "success" ]] && EMOJI=":white_check_mark:"
+          MSG="*All-Content-Service Deployment: ${STATUS^} $EMOJI*\n*Environment:* ${{ steps.vars.outputs.environment }}\n*Action:* ${{ steps.vars.outputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          [[ "${{ steps.vars.outputs.action }}" == "rollback" && "${{ github.event.inputs.rollback_tag }}" != "" ]] && MSG+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
+          curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$MSG\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
 
-      - name: Cleanup temporary files
+      - name: Cleanup
         if: always()
         run: |
-          rm -f /tmp/id_rsa /tmp/ssh_config /tmp/id_rsa.pub deploy.sh docker-compose.yml .env # .env is optional
-          rm -rf scripts # Remove the scripts directory
-          rm -f ~/.ssh/known_hosts # Clean up known_hosts (optional, based on your security policy)
+          rm -f /tmp/id_rsa /tmp/id_rsa.pub /tmp/ssh_config deploy.sh docker-compose.yml .env || true
+          rm -rf scripts ~/.ssh/known_hosts || true
