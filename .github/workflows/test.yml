@@ -14,151 +14,84 @@ on:
         required: true
         default: 'deploy'
         type: choice
-        options:
-          - deploy
-          - rollback
+        options: [deploy, rollback]
       environment:
         description: 'Target environment'
         required: true
         default: 'tn-staging'
         type: choice
-        options:
-          - test-rig-dev
-          - test-rig-prod
-          - tn-dev
-          - tn-staging
+        options: [test-rig-dev, test-rig-prod, tn-dev, tn-staging]
       branch:
-        description: 'Branch to deploy (only for deploy)'
+        description: 'Branch to deploy (deploy only)'
         required: false
         default: 'main'
-        type: string
       rollback_tag:
-        description: 'Tag to rollback to (e.g., deploy-tn-staging-v1.0.0)'
+        description: 'Tag to rollback to (rollback only)'
         required: false
-        type: string
 
 jobs:
-  deploy-or-rollback:
+  deploy:
     runs-on: ubuntu-22.04
     environment: ${{ github.event.inputs.environment || 'tn-staging' }}
     steps:
 
-      - name: Determine environment and action
-        id: vars
+      - name: Install SSH & rsync
+        run: sudo apt-get update && sudo apt-get install -y openssh-client rsync
+
+      - name: Prepare SSH key
         run: |
-          EVENT_NAME="${{ github.event_name }}"
-          REF="${{ github.ref }}"
-          if [[ "$EVENT_NAME" == "push" && "$REF" == refs/tags/* ]]; then
-            TAG="${REF#refs/tags/deploy-}"
-            case "$TAG" in
-              test-rig-dev*) ENVIRONMENT="test-rig-dev" ;;
-              test-rig-prod*) ENVIRONMENT="test-rig-prod" ;;
-              tn-dev*) ENVIRONMENT="tn-dev" ;;
-              tn-staging*) ENVIRONMENT="tn-staging" ;;
-              *) echo "::error::Invalid tag format."; exit 1 ;;
-            esac
-            ACTION="deploy"
+          echo "${{ secrets.SSH_KEY }}" > key.pem
+          chmod 600 key.pem
+
+      - name: Copy deploy.sh to server
+        run: |
+          rsync -e "ssh -i key.pem -o StrictHostKeyChecking=no" \
+            scripts/deploy.sh \
+            deployment@${{ secrets.TN_STAGING_HOST }}:/home/deployment/all-services/all-content-service/scripts/deploy.sh
+
+      - name: Execute remote deploy.sh
+        env:
+          DOCKER_COMPOSE_CONTENT_B64: ${{ secrets.DOCKER_COMPOSE_CONTENT_B64 }}
+          ENV_FILE_B64:             ${{ secrets.ENV_FILE_B64 || '' }}
+        run: |
+          # Decide ref: use rollback_tag if rollback, else branch
+          if [[ "${{ github.event.inputs.action }}" == "rollback" ]]; then
+            REF="${{ github.event.inputs.rollback_tag }}"
           else
-            ENVIRONMENT="${{ github.event.inputs.environment }}"
-            ACTION="${{ github.event.inputs.action }}"
+            REF="${{ github.event.inputs.branch }}"
           fi
-          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
-          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
-          echo "Workflow Inputs: Action=$ACTION, Environment=$ENVIRONMENT, Branch=${{ github.event.inputs.branch }}, Rollback Tag=${{ github.event.inputs.rollback_tag }}"
-
-      - name: Install Dependencies & Prepare Files
-        run: |
-          sudo apt-get update && sudo apt-get install -y rsync dos2unix
-
-          # Check required secrets individually
-          [[ -z "${{ secrets.SSH_KEY }}" ]] && echo "::error::Missing secret: SSH_KEY" && exit 1
-          [[ -z "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" ]] && echo "::error::Missing secret: DEPLOY_SCRIPT_CONTENT" && exit 1
-          [[ -z "${{ secrets.DOCKER_COMPOSE_CONTENT }}" ]] && echo "::error::Missing secret: DOCKER_COMPOSE_CONTENT" && exit 1
-
-          echo "${{ secrets.SSH_KEY }}" | base64 -d > /tmp/id_rsa && chmod 600 /tmp/id_rsa && ssh-keygen -y -f /tmp/id_rsa > /tmp/id_rsa.pub
-          echo "public_key=$(cat /tmp/id_rsa.pub)" >> "$GITHUB_ENV"
-          echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" | base64 -d > deploy.sh
-          echo "${{ secrets.DOCKER_COMPOSE_CONTENT }}" | base64 -d > docker-compose.yml
-          chmod +x deploy.sh
-          dos2unix deploy.sh docker-compose.yml
-
-          [[ -n "${{ secrets.ENV_FILE }}" ]] && echo "${{ secrets.ENV_FILE }}" | base64 -d > .env && chmod 600 .env && dos2unix .env
-
-          echo "--- deploy.sh (first 20 lines) ---"; head -n 20 deploy.sh
-          echo "--- docker-compose.yml ---"; cat docker-compose.yml
-          [[ -f ".env" ]] && echo "--- .env ---"; cat .env
-
-      - name: Set up SSH config and test connectivity
-        id: ssh_setup
-        run: |
-          ENV="${{ steps.vars.outputs.environment }}"
-          mkdir -p ~/.ssh
-          if [[ "$ENV" == "tn-staging" ]]; then
-            HOST="${{ secrets.TN_STAGING_HOST }}"
-            JUMPHOST="${{ secrets.JUMPHOST }}"
-            [[ -z "$JUMPHOST" ]] && echo "::error::Missing JUMPHOST for tn-staging" && exit 1
-            TARGET_DIR="/home/deployment/all-services/all-content-service"
-            printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\nHost target\n  HostName %s\n  User %s\n  IdentityFile /tmp/id_rsa\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" "${JUMPHOST#*@}" "${JUMPHOST%@*}" "${HOST#*@}" "${HOST%@*}" > /tmp/ssh_config
-            ssh-keyscan -H "${JUMPHOST#*@}" >> ~/.ssh/known_hosts || true
-            ssh-keyscan -H "${HOST#*@}" >> ~/.ssh/known_hosts || true
-          else
-            case "$ENV" in
-              test-rig-dev) HOST="${{ secrets.TEST_RIG_DEV_HOST }}"; TARGET_DIR="/home/sudeepr/git/all-content-service" ;;
-              test-rig-prod) HOST="${{ secrets.TEST_RIG_PROD_HOST }}"; TARGET_DIR="/home/sudeepr/all-services/all-content-service" ;;
-              tn-dev) HOST="${{ secrets.TN_DEV_HOST }}"; TARGET_DIR="/home/ubuntu/tnuser/all-content-service" ;;
-              *) echo "::error::Invalid environment: $ENV"; exit 1 ;;
-            esac
-            printf "Host target\n  HostName %s\n  User %s\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" "${HOST#*@}" "${HOST%@*}" > /tmp/ssh_config
-            ssh-keyscan -H "${HOST#*@}" >> ~/.ssh/known_hosts || true
+          if [[ -z "$REF" ]]; then
+            echo "::error::No branch or rollback_tag provided for action ${{ github.event.inputs.action }}"; exit 1
           fi
-          chmod 600 /tmp/ssh_config
-          echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
-          [[ "$ENV" == "tn-staging" ]] && ssh -F /tmp/ssh_config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${{ env.public_key }}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || true
-          for attempt in {1..5}; do ssh -F /tmp/ssh_config target "echo connected" && break || echo "Retrying SSH ($attempt)..."; sleep 10; done || { echo "::error::SSH connection failed"; exit 1; }
 
-      - name: Transfer Files & Run Script
-        run: |
-          ACTION="${{ steps.vars.outputs.action }}"
-          TARGET_DIR="${{ env.target_dir }}"
-          ssh -F /tmp/ssh_config target "mkdir -p $TARGET_DIR/scripts"
-          for file in deploy.sh docker-compose.yml; do
-            for attempt in {1..5}; do
-              rsync -avz -e "ssh -F /tmp/ssh_config" $file target:$TARGET_DIR/$( [[ $file == "deploy.sh" ]] && echo "scripts/" || echo "" )$file && break
-              echo "Rsync $file failed, retrying ($attempt)..."; sleep 10
-            done || { echo "::error::Failed to transfer $file"; exit 1; }
-          done
-          [[ -f ".env" ]] && rsync -avz -e "ssh -F /tmp/ssh_config" .env target:$TARGET_DIR/.env || echo "No .env to transfer"
-          ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/scripts/deploy.sh $TARGET_DIR/docker-compose.yml $TARGET_DIR/.env 2>/dev/null; ls -l $TARGET_DIR/scripts/deploy.sh"
-          BRANCH_OR_TAG="${{ github.event.inputs.branch || github.ref_name }}"
-          [[ "$ACTION" == "rollback" ]] && BRANCH_OR_TAG="${{ github.event.inputs.rollback_tag }}"
-          [[ -z "$BRANCH_OR_TAG" ]] && echo "::error::Rollback tag is required" && exit 1
-          ssh -F /tmp/ssh_config target "sudo bash $TARGET_DIR/scripts/deploy.sh \"$TARGET_DIR\" \"$BRANCH_OR_TAG\" \"$ACTION\""
+          ssh -i key.pem -o StrictHostKeyChecking=no \
+            deployment@${{ secrets.TN_STAGING_HOST }} \
+            "export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}' \
+             ENV_FILE_B64='${ENV_FILE_B64}' && \
+             /home/deployment/all-services/all-content-service/scripts/deploy.sh \
+               /home/deployment/all-services/all-content-service \
+               \"$REF\" \
+               \"${{ github.event.inputs.action }}\""
 
-      - name: Verify Container Status
-        run: |
-          SERVICE_NAME="content-service"
-          for attempt in {1..15}; do
-            ssh -F /tmp/ssh_config target "sudo docker ps --filter name=$SERVICE_NAME --format '{{.Status}}'" | grep -q "Up" && break
-            echo "Waiting for $SERVICE_NAME... ($attempt)"; sleep 10
-          done || { echo "::error::$SERVICE_NAME not running after retries"; exit 1; }
-          ssh -F /tmp/ssh_config target "sudo docker logs $SERVICE_NAME --tail 100"
+      - name: Cleanup local key
+        if: always()
+        run: rm -f key.pem
 
       - name: Notify Slack
         if: always()
         run: |
           if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
             STATUS="${{ job.status }}"
-            EMOJI=":x:"
-            [[ "$STATUS" == "success" ]] && EMOJI=":white_check_mark:"
-            MSG="*All-Content-Service Deployment: ${STATUS^} $EMOJI*\n*Environment:* ${{ steps.vars.outputs.environment }}\n*Action:* ${{ steps.vars.outputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            [[ "${{ steps.vars.outputs.action }}" == "rollback" && "${{ github.event.inputs.rollback_tag }}" != "" ]] && MSG+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
-            curl -X POST -H 'Content-type: application/json' --data "{\"text\":\"$MSG\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
+            EMOJI=":x:"; [[ "$STATUS" == "success" ]] && EMOJI=":white_check_mark:"
+            MSG="*All-Content-Service Deployment ${STATUS^}*  
+          *Env:* ${{ github.event.inputs.environment }}  
+          *Action:* ${{ github.event.inputs.action }}  
+          *Ref:* ${{ github.ref_name }}  
+          *Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            [[ "${{ github.event.inputs.action }}" == "rollback" && -n "${{ github.event.inputs.rollback_tag }}" ]] && \
+              MSG+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
+            curl -X POST -H 'Content-Type: application/json' \
+                 --data "{\"text\":\"$MSG\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
           else
             echo "SLACK_WEBHOOK_URL not configured; skipping Slack notification."
           fi
-
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -f /tmp/id_rsa /tmp/id_rsa.pub /tmp/ssh_config deploy.sh docker-compose.yml .env || true
-          rm -rf scripts ~/.ssh/known_hosts || true
