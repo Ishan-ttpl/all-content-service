@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Action to perform'
+        description: 'deploy or rollback'
         required: true
         default: 'deploy'
         type: choice
@@ -32,42 +32,51 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-22.04
-    environment: ${{ github.event.inputs.environment || 'tn-staging' }}
+    environment: ${{ github.event.inputs.environment }}
     steps:
 
       - name: Install SSH & rsync
-        run: sudo apt-get update && sudo apt-get install -y openssh-client rsync
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client rsync
 
       - name: Prepare SSH key
         run: |
           echo "${{ secrets.SSH_KEY }}" > key.pem
           chmod 600 key.pem
 
-      # Use scp-action for a single fast file transfer instead of manual rsync
-      - name: Copy deploy.sh to server
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          host: ${{ secrets.TN_STAGING_HOST }}
-          username: deployment
-          key: ${{ secrets.SSH_KEY }}
-          source: scripts/deploy.sh
-          target: /home/deployment/all-services/all-content-service/scripts/
+      - name: Write SSH config for jumphost + target
+        run: |
+          JUMP="${{ secrets.JUMPHOST }}"
+          TARGET="${{ secrets.TN_STAGING_HOST }}"
+          mkdir -p ~/.ssh
+          printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  StrictHostKeyChecking no\n" \
+            "${JUMP#*@}" "${JUMP%@*}" "${PWD}" > ~/.ssh/config
+          printf "Host target\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n" \
+            "${TARGET#*@}" "${TARGET%@*}" "${PWD}" >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Copy deploy.sh to target
+        run: |
+          rsync -avz \
+            -e "ssh -F ~/.ssh/config" \
+            scripts/deploy.sh \
+            target:/home/deployment/all-services/all-content-service/scripts/
 
       - name: Execute remote deploy.sh
         env:
           DOCKER_COMPOSE_CONTENT_B64: ${{ secrets.DOCKER_COMPOSE_CONTENT_B64 }}
           ENV_FILE_B64:             ${{ secrets.ENV_FILE_B64 || '' }}
         run: |
-          # Decide ref
           if [[ "${{ github.event.inputs.action }}" == "rollback" ]]; then
             REF="${{ github.event.inputs.rollback_tag }}"
           else
             REF="${{ github.event.inputs.branch }}"
           fi
-          [[ -z "$REF" ]] && echo "::error::No branch/tag provided" && exit 1
-
-          ssh -i key.pem -o StrictHostKeyChecking=no \
-            deployment@${{ secrets.TN_STAGING_HOST }} \
+          if [[ -z "$REF" ]]; then
+            echo "::error::No branch or rollback_tag provided"; exit 1
+          fi
+          ssh -F ~/.ssh/config target \
             "export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}' \
              ENV_FILE_B64='${ENV_FILE_B64}' && \
              /home/deployment/all-services/all-content-service/scripts/deploy.sh \
@@ -85,15 +94,11 @@ jobs:
           if [[ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]]; then
             STATUS="${{ job.status }}"
             EMOJI=":x:"; [[ "$STATUS" == "success" ]] && EMOJI=":white_check_mark:"
-            MSG="*All-Content-Service Deployment ${STATUS^}*  
-            *Env:* ${{ github.event.inputs.environment }}  
-            *Action:* ${{ github.event.inputs.action }}  
-            *Ref:* ${{ github.ref_name }}  
-            *Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            [[ "${{ github.event.inputs.action }}" == "rollback" && -n "${{ github.event.inputs.rollback_tag }}" ]] && \
+            MSG="*Deployment ${STATUS^} $EMOJI*\n*Env:* ${{ github.event.inputs.environment }}\n*Action:* ${{ github.event.inputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            if [[ "${{ github.event.inputs.action }}" == "rollback" && -n "${{ github.event.inputs.rollback_tag }}" ]]; then
               MSG+="\n*Rollback Tag:* ${{ github.event.inputs.rollback_tag }}"
-            curl -X POST -H 'Content-Type: application/json' \
-                 --data "{\"text\":\"$MSG\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
+            fi
+            curl -X POST -H 'Content-Type: application/json' --data "{\"text\":\"$MSG\"}" "${{ secrets.SLACK_WEBHOOK_URL }}"
           else
-            echo "SLACK_WEBHOOK_URL not configured; skipping Slack notification."
+            echo "SLACK_WEBHOOK_URL not set; skipping notification"
           fi
