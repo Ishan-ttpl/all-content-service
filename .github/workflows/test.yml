@@ -70,13 +70,13 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y rsync dos2unix
 
-          for secret in SSH_KEY DEPLOY_SCRIPT_CONTENT DOCKER_COMPOSE_CONTENT; do
-            [[ -z "${{ secrets[$secret] }}" ]] && echo "::error::Missing secret: $secret" && exit 1
-          done
+          # Check required secrets individually
+          [[ -z "${{ secrets.SSH_KEY }}" ]] && echo "::error::Missing secret: SSH_KEY" && exit 1
+          [[ -z "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" ]] && echo "::error::Missing secret: DEPLOY_SCRIPT_CONTENT" && exit 1
+          [[ -z "${{ secrets.DOCKER_COMPOSE_CONTENT }}" ]] && echo "::error::Missing secret: DOCKER_COMPOSE_CONTENT" && exit 1
 
           echo "${{ secrets.SSH_KEY }}" | base64 -d > /tmp/id_rsa && chmod 600 /tmp/id_rsa && ssh-keygen -y -f /tmp/id_rsa > /tmp/id_rsa.pub
           echo "public_key=$(cat /tmp/id_rsa.pub)" >> "$GITHUB_ENV"
-
           echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" | base64 -d > deploy.sh
           echo "${{ secrets.DOCKER_COMPOSE_CONTENT }}" | base64 -d > docker-compose.yml
           chmod +x deploy.sh
@@ -93,7 +93,6 @@ jobs:
         run: |
           ENV="${{ steps.vars.outputs.environment }}"
           mkdir -p ~/.ssh
-
           if [[ "$ENV" == "tn-staging" ]]; then
             HOST="${{ secrets.TN_STAGING_HOST }}"
             JUMPHOST="${{ secrets.JUMPHOST }}"
@@ -112,36 +111,27 @@ jobs:
             printf "Host target\n  HostName %s\n  User %s\n  IdentityFile /tmp/id_rsa\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" "${HOST#*@}" "${HOST%@*}" > /tmp/ssh_config
             ssh-keyscan -H "${HOST#*@}" >> ~/.ssh/known_hosts || true
           fi
-
           chmod 600 /tmp/ssh_config
           echo "target_dir=$TARGET_DIR" >> "$GITHUB_ENV"
-
           [[ "$ENV" == "tn-staging" ]] && ssh -F /tmp/ssh_config target "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${{ env.public_key }}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || true
-
           for attempt in {1..5}; do ssh -F /tmp/ssh_config target "echo connected" && break || echo "Retrying SSH ($attempt)..."; sleep 10; done || { echo "::error::SSH connection failed"; exit 1; }
 
       - name: Transfer Files & Run Script
         run: |
           ACTION="${{ steps.vars.outputs.action }}"
           TARGET_DIR="${{ env.target_dir }}"
-
           ssh -F /tmp/ssh_config target "mkdir -p $TARGET_DIR/scripts"
-
           for file in deploy.sh docker-compose.yml; do
             for attempt in {1..5}; do
               rsync -avz -e "ssh -F /tmp/ssh_config" $file target:$TARGET_DIR/$( [[ $file == "deploy.sh" ]] && echo "scripts/" || echo "" )$file && break
               echo "Rsync $file failed, retrying ($attempt)..."; sleep 10
             done || { echo "::error::Failed to transfer $file"; exit 1; }
           done
-
           [[ -f ".env" ]] && rsync -avz -e "ssh -F /tmp/ssh_config" .env target:$TARGET_DIR/.env || echo "No .env to transfer"
-
           ssh -F /tmp/ssh_config target "dos2unix $TARGET_DIR/scripts/deploy.sh $TARGET_DIR/docker-compose.yml $TARGET_DIR/.env 2>/dev/null; ls -l $TARGET_DIR/scripts/deploy.sh"
-
           BRANCH_OR_TAG="${{ github.event.inputs.branch || github.ref_name }}"
           [[ "$ACTION" == "rollback" ]] && BRANCH_OR_TAG="${{ github.event.inputs.rollback_tag }}"
           [[ -z "$BRANCH_OR_TAG" ]] && echo "::error::Rollback tag is required" && exit 1
-
           ssh -F /tmp/ssh_config target "sudo bash $TARGET_DIR/scripts/deploy.sh \"$TARGET_DIR\" \"$BRANCH_OR_TAG\" \"$ACTION\""
 
       - name: Verify Container Status
