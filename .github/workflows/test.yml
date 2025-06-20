@@ -237,28 +237,29 @@ jobs:
           cat docker-compose.yml
 
       - name: Create and transfer .env file
-        if: ${{ secrets.ENV_FILE != '' }}
         run: |
-          if echo "${{ secrets.ENV_FILE }}" | base64 -d > /tmp/env_check 2>/dev/null; then
-            echo "ENV_FILE is valid base64, proceeding with .env creation."
-          else
-            echo "::error::ENV_FILE secret is not valid base64 encoded data."
-            exit 1
+          if [ -z "${{ secrets.ENV_FILE }}" ]; then
+            echo "ENV_FILE secret not set. Skipping .env deployment."
+            exit 0
           fi
+      
           TARGET_DIR="${{ env.target_dir }}"
           echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
           chmod 600 .env
+      
           for attempt in {1..5}; do
             rsync -avz --timeout=60 -e "ssh -vvv -F /tmp/ssh_config" .env target:$TARGET_DIR/.env && break
             echo "Rsync .env attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to rsync .env file after 5 attempts"; exit 1; }
+      
           for attempt in {1..5}; do
             ssh -vvv -F /tmp/ssh_config target "ls -l $TARGET_DIR/.env && cat $TARGET_DIR/.env" && break
             echo "Verify .env attempt $attempt failed, retrying in 10 seconds..."
             sleep 10
           done || { echo "::error::Failed to verify .env on target server"; exit 1; }
-          rm -f .env /tmp/env_check
+      
+          rm -f .env
 
       - name: Transfer deploy.sh and docker-compose.yml to target
         run: |
