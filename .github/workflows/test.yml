@@ -242,6 +242,10 @@ jobs:
           head -n 20 deploy.sh
           echo "--- docker-compose.yml content ---"
           cat docker-compose.yml
+          if [ ! -f "docker-compose.yml" ]; then
+            echo "::error::docker-compose.yml not found after decoding"
+            exit 1
+          fi
 
       - name: Create and transfer .env file
         run: |
@@ -292,7 +296,7 @@ jobs:
             sleep 10
           done || { echo "::error::Failed to verify transferred files on target"; exit 1; }
 
-      - name: Deploy or rollout
+      - name: Deploy or Rollback
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           ACTION="${{ steps.vars.outputs.action }}"
@@ -301,7 +305,7 @@ jobs:
           if [[ "$ACTION" == "deploy" ]]; then
             BRANCH="${{ github.event.inputs.branch }}"
             if [ -z "$BRANCH" ]; then
-              BRANCH="${{ github.ref_name }}"
+              BRANCH="main"
             fi
             for attempt in {1..5}; do
               ssh -F /tmp/ssh_config target "cd $TARGET_DIR && sudo -n /bin/bash ./deploy.sh \"$TARGET_DIR\" \"$BRANCH\" deploy && docker ps -a && docker logs content-service || echo 'No logs available'" && break
