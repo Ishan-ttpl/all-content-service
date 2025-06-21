@@ -39,41 +39,47 @@ jobs:
           chmod 600 key.pem
 
       - name: Transfer deploy.sh and compose.yml
+        env:
+          RAW_HOST: ${{ secrets.TN_STAGING_HOST }}
         run: |
           set -euxo pipefail
-          RAW="${{ secrets.TN_STAGING_HOST }}"
-          USER="${RAW%@*}"
-          HOST="${RAW#*@}"
+          # Split user@host
+          USER="${RAW_HOST%@*}"
+          HOST="${RAW_HOST#*@}"
           TARGET_DIR=/home/deployment/all-services/all-content-service
           SSH_OPTS="-i key.pem -o StrictHostKeyChecking=no"
-          rsync -az -e "ssh $SSH_OPTS" deploy.sh    $USER@"$HOST":"$TARGET_DIR"/deploy.sh
-          rsync -az -e "ssh $SSH_OPTS" docker-compose.yml $USER@"$HOST":"$TARGET_DIR"/docker-compose.yml
+
+          rsync -az -e "ssh $SSH_OPTS" deploy.sh    "$USER@$HOST:$TARGET_DIR/deploy.sh"
+          rsync -az -e "ssh $SSH_OPTS" docker-compose.yml "$USER@$HOST:$TARGET_DIR/docker-compose.yml"
           if [[ -f .env ]]; then
-            rsync -az -e "ssh $SSH_OPTS" .env $USER@"$HOST":"$TARGET_DIR"/.env
+            rsync -az -e "ssh $SSH_OPTS" .env "$USER@$HOST:$TARGET_DIR/.env"
           fi
 
       - name: Execute remote deploy.sh
+        env:
+          RAW_HOST: ${{ secrets.TN_STAGING_HOST }}
         run: |
           set -euxo pipefail
-          RAW="${{ secrets.TN_STAGING_HOST }}"
-          USER="${RAW%@*}"
-          HOST="${RAW#*@}"
+          USER="${RAW_HOST%@*}"
+          HOST="${RAW_HOST#*@}"
           TARGET_DIR=/home/deployment/all-services/all-content-service
           ACTION="${{ github.event.inputs.action }}"
           REF="${{ github.event.inputs.branch }}"
-          ssh -i key.pem -o StrictHostKeyChecking=no $USER@"$HOST" <<'EOF'
+
+          ssh -i key.pem -o StrictHostKeyChecking=no "$USER@$HOST" <<'EOF'
             set -euo pipefail
             cd /home/deployment/all-services/all-content-service
             sudo bash deploy.sh "$PWD" "'"$REF"'" "'"$ACTION"'"
           EOF
 
       - name: Verify container status
+        env:
+          RAW_HOST: ${{ secrets.TN_STAGING_HOST }}
         run: |
           set -euxo pipefail
-          RAW="${{ secrets.TN_STAGING_HOST }}"
-          USER="${RAW%@*}"
-          HOST="${RAW#*@}"
-          ssh -i key.pem -o StrictHostKeyChecking=no $USER@"$HOST" \
+          USER="${RAW_HOST%@*}"
+          HOST="${RAW_HOST#*@}"
+          ssh -i key.pem -o StrictHostKeyChecking=no "$USER@$HOST" \
             "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
 
       - name: Slack notification
