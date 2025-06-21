@@ -80,15 +80,10 @@ jobs:
 
       - name: Add known hosts
         run: |
-          ssh-keyscan "${{ secrets.JUMPHOST#*@ }}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan "${{ secrets.TN_STAGING_HOST#*@ }}" >> ~/.ssh/known_hosts 2>/dev/null || true
-
-      - name: Prepare deploy.sh
-        run: |
-          mkdir -p scripts/
-          echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" | base64 -d > scripts/deploy.sh
-          chmod +x scripts/deploy.sh
-          dos2unix scripts/deploy.sh
+          JUMP="${{ secrets.JUMPHOST }}"
+          TARGET="${{ secrets.TN_STAGING_HOST }}"
+          ssh-keyscan "${JUMP#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan "${TARGET#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Prepare docker-compose.yml
         run: |
