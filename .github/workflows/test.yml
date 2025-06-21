@@ -1,4 +1,4 @@
-name: Deploy to TN Staging
+name: Deploy to Staging
 
 on:
   push:
@@ -9,14 +9,15 @@ jobs:
   deploy:
     name: Deploy to staging server
     runs-on: ubuntu-latest
+    environment: tn-staging  # 👈 Required to access environment secrets
     env:
-      RAW_HOST: ${{ secrets.TN_STAGING_HOST }}  # e.g., deployment@10.3.0.9
+      RAW_HOST: ${{ secrets.TN_STAGING_HOST }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-      - name: Set up SSH
+      - name: Set up SSH key and config
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
@@ -34,7 +35,21 @@ jobs:
 
           chmod 600 ~/.ssh/config
 
-      - name: Transfer files to remote server
+      - name: Create deploy.sh
+        run: |
+          echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" > deploy.sh
+          chmod +x deploy.sh
+
+      - name: Create docker-compose.yml
+        run: |
+          echo "${{ secrets.DOCKER_COMPOSE_CONTENT }}" > docker-compose.yml
+
+      - name: Create .env file (if set)
+        if: ${{ secrets.ENV_FILE != '' }}
+        run: |
+          echo "${{ secrets.ENV_FILE }}" > .env
+
+      - name: Deploy to staging via rsync
         run: |
           set -euxo pipefail
 
@@ -43,6 +58,7 @@ jobs:
           USER="${RAW_HOST%@*}"
           HOST="${RAW_HOST#*@}"
           TARGET_DIR=/home/deployment/all-services/all-content-service
+
           SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -J sudeepr@4.240.49.92 -i ~/.ssh/id_rsa"
 
           rsync -az -e "ssh $SSH_OPTS" deploy.sh "$USER@$HOST:$TARGET_DIR/deploy.sh"
@@ -51,13 +67,3 @@ jobs:
           if [[ -f .env ]]; then
             rsync -az -e "ssh $SSH_OPTS" .env "$USER@$HOST:$TARGET_DIR/.env"
           fi
-
-      - name: Run deployment script on remote
-        run: |
-          set -euxo pipefail
-
-          ssh -J sudeepr@4.240.49.92 -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$RAW_HOST" <<'EOF'
-            cd /home/deployment/all-services/all-content-service
-            chmod +x deploy.sh
-            ./deploy.sh
-          EOF
