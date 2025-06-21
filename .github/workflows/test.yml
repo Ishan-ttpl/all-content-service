@@ -3,7 +3,10 @@ name: Deploy or Rollback All-Content-Service
 on:
   push:
     tags:
-      - 'deploy-*-*'
+      - 'deploy-test-rig-dev-*'
+      - 'deploy-test-rig-prod-*'
+      - 'deploy-tn-dev-*'
+      - 'deploy-tn-staging-*'
   workflow_dispatch:
     inputs:
       action:
@@ -13,37 +16,35 @@ on:
         options: [deploy, rollback]
         default: deploy
       environment:
-        description: 'Environment'
+        description: 'Target environment'
         required: true
         type: choice
         options: [test-rig-dev, test-rig-prod, tn-dev, tn-staging]
         default: tn-staging
       branch:
-        description: 'Branch to deploy (for deploy)'
+        description: 'Branch to deploy (deploy only)'
         required: false
         default: main
       rollback_tag:
-        description: 'Tag to rollback to (for rollback)'
+        description: 'Tag to rollback to (rollback only)'
         required: false
 
 jobs:
   setup:
     runs-on: ubuntu-22.04
     outputs:
-      env: ${{ steps.determine.outputs.environment }}
-      act: ${{ steps.determine.outputs.action }}
-      ref: ${{ steps.determine.outputs.ref }}
+      environment: ${{ steps.vars.outputs.environment }}
+      action:      ${{ steps.vars.outputs.action }}
+      ref:         ${{ steps.vars.outputs.ref }}
     steps:
-      - name: Determine environment, action & ref
-        id: determine
+      - name: Determine env/action/ref
+        id: vars
         run: |
-          # prefer tag-triggered deploy
           if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" =~ ^refs/tags/deploy- ]]; then
-            TAG="${GITHUB_REF#refs/tags/deploy-}"
-            echo "::debug::Tag deploy prefix → $TAG"
+            TAG=${GITHUB_REF#refs/tags/deploy-}
             ACTION=deploy
-            REF="$TAG"
-            ENV="${TAG%%-*}"
+            REF=$TAG
+            ENV=${TAG%%-*}
           else
             ACTION="${{ github.event.inputs.action }}"
             ENV="${{ github.event.inputs.environment }}"
@@ -54,21 +55,21 @@ jobs:
             fi
           fi
           if [[ -z "$REF" ]]; then
-            echo "::error::No branch or rollback_tag provided for $ACTION"
+            echo "::error::No branch/tag provided for $ACTION"
             exit 1
           fi
-          echo "environment=$ENV"  >> $GITHUB_OUTPUT
-          echo "action=$ACTION"  >> $GITHUB_OUTPUT
-          echo "ref=$REF"        >> $GITHUB_OUTPUT
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "action=$ACTION"   >> $GITHUB_OUTPUT
+          echo "ref=$REF"         >> $GITHUB_OUTPUT
 
   ssh-setup:
     runs-on: ubuntu-22.04
     needs: setup
     outputs:
-      config: ${{ steps.ssh-config.outputs.path }}
+      cfg: ${{ steps.ssh_config.outputs.path }}
     steps:
       - name: Install SSH tools
-        run: sudo apt-get update && sudo apt-get install -y openssh-client rsync dos2unix
+        run: sudo apt-get update && sudo apt-get install -y openssh-client rsync
 
       - name: Write SSH private key
         run: |
@@ -76,41 +77,44 @@ jobs:
           chmod 600 id_rsa
 
       - name: Build SSH config
-        id: ssh-config
+        id: ssh_config
         run: |
-          mkdir -p ~/.ssh
-          cfg=~/.ssh/config
-          touch $cfg
-          chmod 600 $cfg
+          mkdir -p $HOME/.ssh
+          cfg="$HOME/.ssh/config"
+          touch "$cfg" && chmod 600 "$cfg"
 
-          # read secrets into shell vars
           JUMP="${{ secrets.JUMPHOST }}"
           TARGET="${{ secrets.TN_STAGING_HOST }}"
 
-          # jumphost entry
-          printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile %s/id_rsa\n  StrictHostKeyChecking no\n\n" \
-            "${JUMP#*@}" "${JUMP%@*}" "$PWD" >> $cfg
-
-          # target entry
-          printf "Host target\n  HostName %s\n  User %s\n  IdentityFile %s/id_rsa\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n" \
-            "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> $cfg
-
+          cat >> "$cfg" <<EOF
+          Host jumphost
+            HostName ${JUMP#*@}
+            User ${JUMP%@*}
+            IdentityFile $PWD/id_rsa
+            StrictHostKeyChecking no
+          
+          Host target
+            HostName ${TARGET#*@}
+            User ${TARGET%@*}
+            IdentityFile $PWD/id_rsa
+            ProxyJump jumphost
+            StrictHostKeyChecking no
+          EOF
           echo "::set-output name=path::$cfg"
 
       - name: Add known hosts
         run: |
-          JUMP="${{ secrets.JUMPHOST }}"
-          TARGET="${{ secrets.TN_STAGING_HOST }}"
-          ssh-keyscan -H "${JUMP#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan -H "${TARGET#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          mkdir -p $HOME/.ssh
+          ssh-keyscan -H "${{ secrets.JUMPHOST#*@ }}" >> $HOME/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H "${{ secrets.TN_STAGING_HOST#*@ }}" >> $HOME/.ssh/known_hosts 2>/dev/null || true
 
   deploy_or_rollback:
     needs: [setup, ssh-setup]
     runs-on: ubuntu-22.04
     env:
-      SSH_CFG: ${{ needs.ssh-setup.outputs.config }}
+      SSH_CFG: ${{ needs.ssh-setup.outputs.cfg }}
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.setup.outputs.ref }}
@@ -118,25 +122,24 @@ jobs:
       - name: Transfer files to remote
         run: |
           TARGET_DIR=/home/deployment/all-services/all-content-service
-          rsync -avz -e "ssh -F $SSH_CFG" deploy.sh    target:$TARGET_DIR/
-          rsync -avz -e "ssh -F $SSH_CFG" docker-compose.yml target:$TARGET_DIR/
-          # .env is optional
+          rsync -az -e "ssh -F $SSH_CFG" deploy.sh    target:$TARGET_DIR/
+          rsync -az -e "ssh -F $SSH_CFG" docker-compose.yml target:$TARGET_DIR/
           if [[ -f .env ]]; then
-            rsync -avz -e "ssh -F $SSH_CFG" .env target:$TARGET_DIR/
+            rsync -az -e "ssh -F $SSH_CFG" .env target:$TARGET_DIR/
           fi
 
-      - name: Execute on remote
+      - name: Execute remote script
         run: |
           ACTION=${{ needs.setup.outputs.action }}
           REF=${{ needs.setup.outputs.ref }}
-          ssh -F $SSH_CFG target << 'EOF'
+          ssh -F $SSH_CFG target <<'EOF'
             set -euo pipefail
             cd /home/deployment/all-services/all-content-service
             echo "Running $ACTION on $REF"
             sudo bash ./deploy.sh "$PWD" "$REF" "$ACTION"
-          EOF
+           EOF
 
-      - name: Verify remote container
+      - name: Verify container is up
         run: |
           ssh -F $SSH_CFG target "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
 
@@ -145,12 +148,12 @@ jobs:
     runs-on: ubuntu-22.04
     if: always()
     steps:
-      - name: Send Slack notification
+      - name: Slack notification
         uses: slackapi/slack-github-action@v1.24.0
         with:
           payload: |
             {
-              "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: *All-Content-Service* `${{ needs.setup.outputs.action }}` on `${{ needs.setup.outputs.environment }}` _ref=${{ needs.setup.outputs.ref }}_ \nStatus: `${{ job.status }}`\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+              "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: Deploy *${{ needs.setup.outputs.action }}* of *all-content-service* to *${{ needs.setup.outputs.environment }}* (_ref=${{ needs.setup.outputs.ref }}_) - Status: *${{ job.status }}*"
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
