@@ -34,14 +34,14 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-22.04
-    environment: ${{ github.event.inputs.environment || 'tn-staging' }}
+    environment: ${{ github.event.inputs.environment }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch || github.ref_name }}
           repository: Ishan-ttpl/all-content-service
+          ref: ${{ github.event.inputs.branch != '' && github.event.inputs.branch || github.ref_name }}
 
       - name: Install dependencies
         run: |
@@ -55,21 +55,31 @@ jobs:
 
       - name: Write SSH config for jumphost and target
         run: |
-          JUMP="${{ secrets.JUMPHOST }}"
-          TARGET="${{ secrets.TN_STAGING_HOST }}"
           mkdir -p ~/.ssh
-          printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" \
-            "${JUMP#*@}" "${JUMP%@*}" "$PWD" > ~/.ssh/config
-          printf "Host target\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" \
-            "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> ~/.ssh/config
-          chmod 600 ~/.ssh/config
+          echo "Host jumphost
+            HostName ${JUMPHOST#*@}
+            User ${JUMPHOST%@*}
+            IdentityFile $PWD/key.pem
+            StrictHostKeyChecking no
+            UserKnownHostsFile=/dev/null" >> ~/.ssh/config
+          echo "Host target
+            HostName ${TN_STAGING_HOST#*@}
+            User ${TN_STAGING_HOST%@*}
+            IdentityFile $PWD/key.pem
+            ProxyJump jumphost
+            StrictHostKeyChecking no
+            UserKnownHostsFile=/dev/null" >> ~/.ssh/config
+        env:
+          JUMPHOST: ${{ secrets.JUMPHOST }}
+          TN_STAGING_HOST: ${{ secrets.TN_STAGING_HOST }}
 
       - name: Add known hosts
         run: |
-          JUMP_HOST="${{ secrets.JUMPHOST }}"
-          TARGET_HOST="${{ secrets.TN_STAGING_HOST }}"
-          ssh-keyscan "${JUMP_HOST#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan "${TARGET_HOST#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan "${JUMPHOST#*@}" >> ~/.ssh/known_hosts || true
+          ssh-keyscan "${TN_STAGING_HOST#*@}" >> ~/.ssh/known_hosts || true
+        env:
+          JUMPHOST: ${{ secrets.JUMPHOST }}
+          TN_STAGING_HOST: ${{ secrets.TN_STAGING_HOST }}
 
       - name: Prepare deploy.sh
         run: |
@@ -82,20 +92,18 @@ jobs:
         run: |
           echo "${{ secrets.DOCKER_COMPOSE_CONTENT }}" | base64 -d > docker-compose.yml
           dos2unix docker-compose.yml
-          cat docker-compose.yml
 
-          - name: Prepare .env file
-            run: |
-              if [ -n "${{ secrets.ENV_FILE }}" ]; then
-                echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
-                chmod 600 .env
-                cat .env
-              else
-                echo "No .env content found in secrets."
-              fi
+      - name: Prepare .env file (if secret exists)
+        run: |
+          if [ -n "${{ secrets.ENV_FILE }}" ]; then
+            echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
+            chmod 600 .env
+            cat .env
+          else
+            echo "No ENV_FILE secret provided. Skipping .env creation."
+          fi
 
-
-      - name: Transfer deploy.sh, docker-compose.yml, and .env to remote server
+      - name: Transfer files to remote server
         run: |
           TARGET_DIR="/home/deployment/all-services/all-content-service"
           rsync -avz -e "ssh -F ~/.ssh/config" scripts/deploy.sh target:"$TARGET_DIR/scripts/"
@@ -108,26 +116,23 @@ jobs:
           fi
 
       - name: Run remote deploy script
-        env:
-          DOCKER_COMPOSE_CONTENT_B64: ${{ secrets.DOCKER_COMPOSE_CONTENT }}
-          ENV_FILE_B64: ${{ secrets.ENV_FILE || '' }}
         run: |
-          if [[ "${{ github.event.inputs.action }}" == "rollback" ]]; then
+          ACTION="${{ github.event.inputs.action }}"
+          if [ "$ACTION" == "rollback" ]; then
             REF="${{ github.event.inputs.rollback_tag }}"
           else
             REF="${{ github.event.inputs.branch }}"
           fi
-          if [[ -z "$REF" ]]; then
+          if [ -z "$REF" ]; then
             echo "::error::No branch or rollback_tag provided"
             exit 1
           fi
           ssh -F ~/.ssh/config target <<EOF
             set -e
             cd /home/deployment/all-services/all-content-service
-            export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}'
-            export ENV_FILE_B64='${ENV_FILE_B64}'
-            echo "🔧 Running deploy script for $REF..."
-            sudo bash scripts/deploy.sh "\$PWD" "$REF" "${{ github.event.inputs.action }}"
+            export DOCKER_COMPOSE_CONTENT_B64='${{ secrets.DOCKER_COMPOSE_CONTENT }}'
+            export ENV_FILE_B64='${{ secrets.ENV_FILE }}'
+            sudo bash scripts/deploy.sh "\$PWD" "$REF" "$ACTION"
           EOF
 
       - name: Verify container logs
@@ -159,4 +164,5 @@ jobs:
       - name: Cleanup temporary files
         if: always()
         run: |
-          rm -f key.pem .env scripts/deploy.sh docker-compose.yml
+          rm -f key.pem .env docker-compose.yml
+          rm -rf scripts/
