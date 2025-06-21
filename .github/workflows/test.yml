@@ -4,74 +4,58 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'deploy or rollback'
+        description: 'Action to perform (deploy or rollback)'
         required: true
         default: 'deploy'
       branch:
-        description: 'Branch to deploy or rollback'
+        description: 'Branch to deploy from'
         required: true
         default: 'main'
 
 jobs:
   deploy:
-    runs-on: ubuntu-22.04
-    environment: tn-staging
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up SSH key
+      - name: Set up SSH config
         run: |
-          echo "${{ secrets.SSH_KEY }}" > key.pem
-          chmod 600 key.pem
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
 
-      - name: Prepare host info
-        run: |
-          echo "RAW_HOST=${{ secrets.TN_STAGING_HOST }}" >> $GITHUB_ENV
+          cat <<EOF > ~/.ssh/config
+          Host staging
+            HostName 10.3.0.9
+            User all-staging-user
+            IdentityFile ~/.ssh/id_rsa
+            ProxyJump sudeepr@4.240.49.92
+            StrictHostKeyChecking no
+          EOF
+          chmod 600 ~/.ssh/config
 
-      - name: Transfer deploy.sh and compose
-        run: |
-          set -euxo pipefail
-
-          : "${RAW_HOST:?Environment variable RAW_HOST (from secrets.TN_STAGING_HOST) is required}"
-          USER="${RAW_HOST%@*}"
-          HOST="${RAW_HOST#*@}"
-          TARGET_DIR=/home/deployment/all-services/all-content-service
-          SSH_OPTS="-i key.pem -o StrictHostKeyChecking=no"
-
-          rsync -az -e "ssh $SSH_OPTS" deploy.sh "$USER@$HOST:$TARGET_DIR/deploy.sh"
-          rsync -az -e "ssh $SSH_OPTS" docker-compose.yml "$USER@$HOST:$TARGET_DIR/docker-compose.yml"
-
-          if [[ -f .env ]]; then
-            rsync -az -e "ssh $SSH_OPTS" .env "$USER@$HOST:$TARGET_DIR/.env"
-          fi
-
-      - name: Execute remote deploy.sh
+      - name: Deploy to staging server
         run: |
           set -euxo pipefail
-
-          USER="${RAW_HOST%@*}"
-          HOST="${RAW_HOST#*@}"
+          
           TARGET_DIR=/home/deployment/all-services/all-content-service
           ACTION="${{ github.event.inputs.action }}"
           REF="${{ github.event.inputs.branch }}"
-          
-          ssh -i key.pem -o StrictHostKeyChecking=no "$USER@$HOST" <<EOF
+
+          rsync -az deploy.sh staging:"$TARGET_DIR"/deploy.sh
+          rsync -az docker-compose.yml staging:"$TARGET_DIR"/docker-compose.yml
+
+          if [[ -f .env ]]; then
+            rsync -az .env staging:"$TARGET_DIR"/.env
+          fi
+
+          ssh staging <<EOF
             set -euo pipefail
             cd "$TARGET_DIR"
             sudo bash deploy.sh "\$PWD" "$REF" "$ACTION"
-           EOF
-
-      - name: Verify container status
-        run: |
-          set -euxo pipefail
-
-          USER="${RAW_HOST%@*}"
-          HOST="${RAW_HOST#*@}"
-          
-          ssh -i key.pem -o StrictHostKeyChecking=no "$USER@$HOST" \
-            "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
+          EOF
 
       - name: Slack notification
         if: always()
