@@ -1,29 +1,22 @@
-name: Deploy All-Content-Service to Staging
+name: Deploy to TN Staging
 
 on:
-  workflow_dispatch:
-    inputs:
-      action:
-        description: "Action (deploy/rollback)"
-        required: true
-        default: "deploy"
-      branch:
-        description: "Branch to deploy"
-        required: true
-        default: "main"
+  push:
+    branches:
+      - main
 
 jobs:
   deploy:
+    name: Deploy to staging server
     runs-on: ubuntu-latest
-
     env:
-      RAW_HOST: ${{ secrets.TN_STAGING_HOST }}
+      RAW_HOST: ${{ secrets.TN_STAGING_HOST }}  # e.g., deployment@10.3.0.9
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup SSH config
+      - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
@@ -32,28 +25,26 @@ jobs:
           cat <<EOF > ~/.ssh/config
           Host staging
             HostName 10.3.0.9
-            User all-staging-user
+            User deployment
             IdentityFile ~/.ssh/id_rsa
             ProxyJump sudeepr@4.240.49.92
             StrictHostKeyChecking no
             UserKnownHostsFile=/dev/null
           EOF
+
           chmod 600 ~/.ssh/config
 
-      - name: Transfer files to staging server
+      - name: Transfer files to remote server
         run: |
           set -euxo pipefail
 
-          # Validate env
-          : "${RAW_HOST:?Environment variable RAW_HOST (from secrets.TN_STAGING_HOST) is required}"
+          : "${RAW_HOST:?Environment variable RAW_HOST is required}"
 
-          # Split into USER and HOST
           USER="${RAW_HOST%@*}"
           HOST="${RAW_HOST#*@}"
           TARGET_DIR=/home/deployment/all-services/all-content-service
           SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -J sudeepr@4.240.49.92 -i ~/.ssh/id_rsa"
 
-          # Send files
           rsync -az -e "ssh $SSH_OPTS" deploy.sh "$USER@$HOST:$TARGET_DIR/deploy.sh"
           rsync -az -e "ssh $SSH_OPTS" docker-compose.yml "$USER@$HOST:$TARGET_DIR/docker-compose.yml"
 
@@ -61,18 +52,12 @@ jobs:
             rsync -az -e "ssh $SSH_OPTS" .env "$USER@$HOST:$TARGET_DIR/.env"
           fi
 
-      - name: Verify container status
+      - name: Run deployment script on remote
         run: |
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -J sudeepr@4.240.49.92 -i ~/.ssh/id_rsa ${{ secrets.TN_STAGING_HOST }} \
-            "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
+          set -euxo pipefail
 
-      - name: Slack notification
-        if: always()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          payload: >
-            {
-              "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: *${{ github.event.inputs.action }}* on *${{ github.event.inputs.branch }}* — *${{ job.status }}*"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ssh -J sudeepr@4.240.49.92 -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$RAW_HOST" <<'EOF'
+            cd /home/deployment/all-services/all-content-service
+            chmod +x deploy.sh
+            ./deploy.sh
+          EOF
