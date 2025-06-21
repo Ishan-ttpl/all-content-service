@@ -43,17 +43,25 @@ jobs:
           RAW_HOST: ${{ secrets.TN_STAGING_HOST }}
         run: |
           set -euxo pipefail
+
+          # Fail fast if secret is missing
+          : "${RAW_HOST:?Environment variable RAW_HOST (from secrets.TN_STAGING_HOST) is required}"
+
           # Split user@host
           USER="${RAW_HOST%@*}"
           HOST="${RAW_HOST#*@}"
           TARGET_DIR=/home/deployment/all-services/all-content-service
           SSH_OPTS="-i key.pem -o StrictHostKeyChecking=no"
 
+          # Transfer files
           rsync -az -e "ssh $SSH_OPTS" deploy.sh    "$USER@$HOST:$TARGET_DIR/deploy.sh"
           rsync -az -e "ssh $SSH_OPTS" docker-compose.yml "$USER@$HOST:$TARGET_DIR/docker-compose.yml"
+
+          # Optional .env
           if [[ -f .env ]]; then
             rsync -az -e "ssh $SSH_OPTS" .env "$USER@$HOST:$TARGET_DIR/.env"
           fi
+
 
       - name: Execute remote deploy.sh
         env:
