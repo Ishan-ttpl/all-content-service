@@ -23,13 +23,14 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      - name: Install tools
+      - name: Install SSH & rsync
         run: sudo apt-get update && sudo apt-get install -y openssh-client rsync dos2unix
 
       - name: Write SSH key
@@ -37,59 +38,49 @@ jobs:
           echo "${{ secrets.SSH_KEY }}" | base64 -d > key.pem
           chmod 600 key.pem
 
-      - name: Transfer deploy.sh and compose
+      - name: Transfer deploy.sh and compose.yml
         run: |
           set -euxo pipefail
-          # Pull the raw secret into a shell var
-          RAW_HOST="${{ secrets.TN_STAGING_HOST }}"
-          # Now do the user/host split in shell
-          USER="${RAW_HOST%@*}"
-          HOST="${RAW_HOST#*@}"
+          RAW="${{ secrets.TN_STAGING_HOST }}"
+          USER="${RAW%@*}"
+          HOST="${RAW#*@}"
           TARGET_DIR=/home/deployment/all-services/all-content-service
-
-          # rsync using the key and disabling host checks
-          RSYNC_SSH="ssh -i key.pem -oStrictHostKeyChecking=no"
-
-          rsync -az -e "$RSYNC_SSH" deploy.sh    $USER@"$HOST":"$TARGET_DIR"/deploy.sh
-          rsync -az -e "$RSYNC_SSH" docker-compose.yml $USER@"$HOST":"$TARGET_DIR"/docker-compose.yml
-
+          SSH_OPTS="-i key.pem -o StrictHostKeyChecking=no"
+          rsync -az -e "ssh $SSH_OPTS" deploy.sh    $USER@"$HOST":"$TARGET_DIR"/deploy.sh
+          rsync -az -e "ssh $SSH_OPTS" docker-compose.yml $USER@"$HOST":"$TARGET_DIR"/docker-compose.yml
           if [[ -f .env ]]; then
-            rsync -az -e "$RSYNC_SSH" .env $USER@"$HOST":"$TARGET_DIR"/.env
+            rsync -az -e "ssh $SSH_OPTS" .env $USER@"$HOST":"$TARGET_DIR"/.env
           fi
 
       - name: Execute remote deploy.sh
         run: |
           set -euxo pipefail
-
-          # Load the raw secret and split in shell
-          RAW_HOST="${{ secrets.TN_STAGING_HOST }}"
-          USER="${RAW_HOST%@*}"
-          HOST="${RAW_HOST#*@}"
-
+          RAW="${{ secrets.TN_STAGING_HOST }}"
+          USER="${RAW%@*}"
+          HOST="${RAW#*@}"
           TARGET_DIR=/home/deployment/all-services/all-content-service
           ACTION="${{ github.event.inputs.action }}"
           REF="${{ github.event.inputs.branch }}"
-
-          # SSH in and run the script
-          ssh -i key.pem -oStrictHostKeyChecking=no "$USER@$HOST" <<'EOF'
+          ssh -i key.pem -o StrictHostKeyChecking=no $USER@"$HOST" <<'EOF'
             set -euo pipefail
             cd /home/deployment/all-services/all-content-service
             sudo bash deploy.sh "$PWD" "'"$REF"'" "'"$ACTION"'"
           EOF
 
-
       - name: Verify container status
         run: |
-          HOST="${{ secrets.TN_STAGING_HOST#*@ }}"
-          USER="${{ secrets.TN_STAGING_HOST%@* }}"
-          ssh -i key.pem -oStrictHostKeyChecking=no $USER@"$HOST" \
+          set -euxo pipefail
+          RAW="${{ secrets.TN_STAGING_HOST }}"
+          USER="${RAW%@*}"
+          HOST="${RAW#*@}"
+          ssh -i key.pem -o StrictHostKeyChecking=no $USER@"$HOST" \
             "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
 
       - name: Slack notification
         if: always()
         uses: slackapi/slack-github-action@v1.24.0
         with:
-          payload: >
+          payload: |
             {
               "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: *${{ github.event.inputs.action }}* on *${{ github.event.inputs.branch }}* — *${{ job.status }}*"
             }
