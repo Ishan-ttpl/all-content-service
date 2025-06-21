@@ -64,10 +64,13 @@ jobs:
             "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> /home/runner/.ssh/config
           chmod 600 /home/runner/.ssh/config
 
-      - name: Add known hosts
-        run: |
-          ssh-keyscan -H "${{ secrets.JUMPHOST#*@ }}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan -H "${{ secrets.TN_STAGING_HOST#*@ }}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
+          - name: Add known hosts
+            run: |
+              JUMP_HOST="${{ secrets.JUMPHOST }}"
+              TARGET_HOST="${{ secrets.TN_STAGING_HOST }}"
+              ssh-keyscan -H "${JUMP_HOST#*@}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
+              ssh-keyscan -H "${TARGET_HOST#*@}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
+
 
       - name: Prepare deploy.sh
         run: |
