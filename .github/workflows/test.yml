@@ -64,13 +64,12 @@ jobs:
             "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> /home/runner/.ssh/config
           chmod 600 /home/runner/.ssh/config
 
-          - name: Add known hosts
-            run: |
-              JUMP_HOST="${{ secrets.JUMPHOST }}"
-              TARGET_HOST="${{ secrets.TN_STAGING_HOST }}"
-              ssh-keyscan -H "${JUMP_HOST#*@}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
-              ssh-keyscan -H "${TARGET_HOST#*@}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
-
+      - name: Add known hosts
+        run: |
+          JUMP_HOST="${{ secrets.JUMPHOST }}"
+          TARGET_HOST="${{ secrets.TN_STAGING_HOST }}"
+          ssh-keyscan -H "${JUMP_HOST#*@}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H "${TARGET_HOST#*@}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
 
       - name: Prepare deploy.sh
         run: |
@@ -83,14 +82,12 @@ jobs:
         run: |
           echo "${{ secrets.DOCKER_COMPOSE_CONTENT }}" | base64 -d > docker-compose.yml
           dos2unix docker-compose.yml
-          cat docker-compose.yml
 
-      - name: Prepare .env file (if present)
+      - name: Prepare .env file (if provided)
         run: |
           if [ -n "${{ secrets.ENV_FILE }}" ]; then
             echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
             chmod 600 .env
-            cat .env
           else
             echo "No .env content found in secrets."
           fi
@@ -103,7 +100,6 @@ jobs:
           rsync -avz -e "ssh -F /home/runner/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
           if [ -f .env ]; then
             rsync -avz -e "ssh -F /home/runner/.ssh/config" .env target:"$TARGET_DIR/.env"
-            ssh -F /home/runner/.ssh/config target "ls -l $TARGET_DIR/.env && cat $TARGET_DIR/.env"
           else
             ssh -F /home/runner/.ssh/config target "rm -f $TARGET_DIR/.env || true"
           fi
@@ -118,18 +114,15 @@ jobs:
           else
             REF="${{ github.event.inputs.branch }}"
           fi
-
           if [[ -z "$REF" ]]; then
             echo "::error::No branch or rollback_tag provided"
             exit 1
           fi
-
           ssh -F /home/runner/.ssh/config target <<EOF
             set -e
             cd /home/deployment/all-services/all-content-service
             export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}'
             export ENV_FILE_B64='${ENV_FILE_B64}'
-            echo "🔧 Running deploy script for $REF..."
             sudo bash scripts/deploy.sh "\$PWD" "$REF" "${{ github.event.inputs.action }}"
           EOF
 
@@ -143,7 +136,7 @@ jobs:
         with:
           payload: |
             {
-              "text": "✅ Deployment of *All-Content-Service* to *${{ github.event.inputs.environment }}* succeeded.\nRef: `${{ github.event.inputs.branch || github.event.inputs.rollback_tag }}`"
+              "text": "✅ Deployment of *All-Content-Service* to *${{ github.event.inputs.environment }}* completed successfully.\nRef: `${{ github.event.inputs.branch || github.event.inputs.rollback_tag }}`"
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -162,4 +155,5 @@ jobs:
       - name: Cleanup temporary files
         if: always()
         run: |
-          rm -f key.pem .env docker-compose.yml scripts/deploy.sh
+          rm -f key.pem .env docker-compose.yml
+          rm -rf scripts/
