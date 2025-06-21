@@ -12,148 +12,150 @@ on:
       action:
         description: 'deploy or rollback'
         required: true
-        default: 'deploy'
         type: choice
         options: [deploy, rollback]
+        default: deploy
       environment:
         description: 'Target environment'
         required: true
-        default: 'tn-staging'
         type: choice
         options: [test-rig-dev, test-rig-prod, tn-dev, tn-staging]
+        default: tn-staging
       branch:
-        description: 'Branch to deploy (for deploy only)'
+        description: 'Branch to deploy (deploy only)'
         required: false
-        default: 'main'
-        type: string
+        default: main
       rollback_tag:
-        description: 'Tag to rollback to (for rollback only)'
+        description: 'Tag to rollback to (rollback only)'
         required: false
-        type: string
 
 jobs:
-  deploy:
+  setup:
     runs-on: ubuntu-22.04
-    environment: ${{ github.event.inputs.environment || 'tn-staging' }}
-
+    outputs:
+      environment: ${{ steps.vars.outputs.environment }}
+      action:      ${{ steps.vars.outputs.action }}
+      ref:         ${{ steps.vars.outputs.ref }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch || github.ref_name }}
-          repository: Ishan-ttpl/all-content-service
-
-      - name: Install dependencies
+      - name: Determine env/action/ref
+        id: vars
         run: |
-          sudo apt-get update
-          sudo apt-get install -y openssh-client rsync dos2unix
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" =~ ^refs/tags/deploy- ]]; then
+            TAG=${GITHUB_REF#refs/tags/deploy-}
+            ACTION=deploy
+            REF=$TAG
+            ENV=${TAG%%-*}
+          else
+            ACTION="${{ github.event.inputs.action }}"
+            ENV="${{ github.event.inputs.environment }}"
+            if [[ "$ACTION" == "rollback" ]]; then
+              REF="${{ github.event.inputs.rollback_tag }}"
+            else
+              REF="${{ github.event.inputs.branch }}"
+            fi
+          fi
+          if [[ -z "$REF" ]]; then
+            echo "::error::No branch/tag provided for $ACTION"
+            exit 1
+          fi
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "action=$ACTION"   >> $GITHUB_OUTPUT
+          echo "ref=$REF"         >> $GITHUB_OUTPUT
 
-      - name: Setup SSH Key
-        run: |
-          echo "${{ secrets.SSH_KEY }}" | base64 -d > key.pem
-          chmod 600 key.pem
+  ssh-setup:
+    runs-on: ubuntu-22.04
+    needs: setup
+    outputs:
+      cfg: ${{ steps.ssh_config.outputs.path }}
+    steps:
+      - name: Install SSH tools
+        run: sudo apt-get update && sudo apt-get install -y openssh-client rsync
 
-      - name: Write SSH config for jumphost and target
+      - name: Write SSH Key
         run: |
+          echo "${{ secrets.SSH_KEY }}" | base64 -d > id_rsa
+          chmod 600 id_rsa
+
+      - name: Build SSH config
+        id: ssh_config
+        run: |
+          mkdir -p ~/.ssh
+          cfg=~/.ssh/config
+          touch $cfg && chmod 600 $cfg
+
           JUMP="${{ secrets.JUMPHOST }}"
           TARGET="${{ secrets.TN_STAGING_HOST }}"
-          mkdir -p /home/runner/.ssh
-          printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" \
-            "${JUMP#*@}" "${JUMP%@*}" "$PWD" > /home/runner/.ssh/config
-          printf "Host target\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" \
-            "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> /home/runner/.ssh/config
-          chmod 600 /home/runner/.ssh/config
+
+          cat >> $cfg <<EOF
+          Host jumphost
+            HostName ${JUMP#*@}
+            User ${JUMP%@*}
+            IdentityFile $PWD/id_rsa
+            StrictHostKeyChecking no
+          
+          Host target
+            HostName ${TARGET#*@}
+            User ${TARGET%@*}
+            IdentityFile $PWD/id_rsa
+            ProxyJump jumphost
+            StrictHostKeyChecking no
+          EOF
+          echo "::set-output name=path::$cfg"
 
       - name: Add known hosts
         run: |
-          JUMP_HOST="${{ secrets.JUMPHOST }}"
-          TARGET_HOST="${{ secrets.TN_STAGING_HOST }}"
-          ssh-keyscan -H "${JUMP_HOST#*@}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan -H "${TARGET_HOST#*@}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
+          JUMP="${{ secrets.JUMPHOST }}"
+          TARGET="${{ secrets.TN_STAGING_HOST }}"
+          ssh-keyscan -H "${JUMP#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H "${TARGET#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Prepare deploy.sh
-        run: |
-          mkdir -p scripts/
-          echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" | base64 -d > scripts/deploy.sh
-          chmod +x scripts/deploy.sh
-          dos2unix scripts/deploy.sh
+  deploy_or_rollback:
+    needs: [setup, ssh-setup]
+    runs-on: ubuntu-22.04
+    env:
+      SSH_CFG: ${{ needs.ssh-setup.outputs.cfg }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup.outputs.ref }}
 
-      - name: Prepare docker-compose.yml
+      - name: Transfer deploy.sh & docker-compose.yml
         run: |
-          echo "${{ secrets.DOCKER_COMPOSE_CONTENT }}" | base64 -d > docker-compose.yml
-          dos2unix docker-compose.yml
-
-      - name: Prepare .env file (if provided)
-        run: |
-          if [ -n "${{ secrets.ENV_FILE }}" ]; then
-            echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
-            chmod 600 .env
-          else
-            echo "No .env content found in secrets."
+          TARGET_DIR=/home/deployment/all-services/all-content-service
+          rsync -az -e "ssh -F $SSH_CFG" deploy.sh    target:$TARGET_DIR/
+          rsync -az -e "ssh -F $SSH_CFG" docker-compose.yml target:$TARGET_DIR/
+          # optional .env in repo root
+          if [[ -f .env ]]; then
+            rsync -az -e "ssh -F $SSH_CFG" .env target:$TARGET_DIR/
           fi
 
-      - name: Transfer files to remote server
+      - name: Execute remote script
         run: |
-          TARGET_DIR="/home/deployment/all-services/all-content-service"
-          ssh -F /home/runner/.ssh/config target "mkdir -p \"$TARGET_DIR/scripts\""
-          rsync -avz -e "ssh -F /home/runner/.ssh/config" scripts/deploy.sh target:"$TARGET_DIR/scripts/deploy.sh"
-          rsync -avz -e "ssh -F /home/runner/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
-          if [ -f .env ]; then
-            rsync -avz -e "ssh -F /home/runner/.ssh/config" .env target:"$TARGET_DIR/.env"
-          else
-            ssh -F /home/runner/.ssh/config target "rm -f $TARGET_DIR/.env || true"
-          fi
-
-      - name: Run remote deploy script
-        env:
-          DOCKER_COMPOSE_CONTENT_B64: ${{ secrets.DOCKER_COMPOSE_CONTENT }}
-          ENV_FILE_B64: ${{ secrets.ENV_FILE || '' }}
-        run: |
-          if [[ "${{ github.event.inputs.action }}" == "rollback" ]]; then
-            REF="${{ github.event.inputs.rollback_tag }}"
-          else
-            REF="${{ github.event.inputs.branch }}"
-          fi
-          if [[ -z "$REF" ]]; then
-            echo "::error::No branch or rollback_tag provided"
-            exit 1
-          fi
-          ssh -F /home/runner/.ssh/config target <<EOF
-            set -e
+          ACTION=${{ needs.setup.outputs.action }}
+          REF=${{ needs.setup.outputs.ref }}
+          ssh -F $SSH_CFG target <<'EOH'
+            set -euo pipefail
             cd /home/deployment/all-services/all-content-service
-            export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}'
-            export ENV_FILE_B64='${ENV_FILE_B64}'
-            sudo bash scripts/deploy.sh "\$PWD" "$REF" "${{ github.event.inputs.action }}"
-          EOF
+            echo "Running $ACTION on $REF"
+            sudo bash ./deploy.sh "$PWD" "$REF" "$ACTION"
+           EOH
 
-      - name: Verify container logs
+      - name: Verify container is up
         run: |
-          ssh -F /home/runner/.ssh/config target "docker logs content-service || echo 'Failed to get container logs'"
+          ssh -F $SSH_CFG target "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
 
-      - name: Notify Slack — Success
-        if: success()
+  notify:
+    needs: deploy_or_rollback
+    runs-on: ubuntu-22.04
+    if: always()
+    steps:
+      - name: Slack notification
         uses: slackapi/slack-github-action@v1.24.0
         with:
           payload: |
             {
-              "text": "✅ Deployment of *All-Content-Service* to *${{ github.event.inputs.environment }}* completed successfully.\nRef: `${{ github.event.inputs.branch || github.event.inputs.rollback_tag }}`"
+              "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: Deploy *${{ needs.setup.outputs.action }}* of *all-content-service* to *${{ needs.setup.outputs.environment }}* (_ref=${{ needs.setup.outputs.ref }}_) - Status: *${{ job.status }}*"
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-      - name: Notify Slack — Failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          payload: |
-            {
-              "text": "❌ Deployment of *All-Content-Service* to *${{ github.event.inputs.environment }}* failed.\nRef: `${{ github.event.inputs.branch || github.event.inputs.rollback_tag }}`\n<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-      - name: Cleanup temporary files
-        if: always()
-        run: |
-          rm -f key.pem .env docker-compose.yml
-          rm -rf scripts/
