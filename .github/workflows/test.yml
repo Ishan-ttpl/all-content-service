@@ -59,17 +59,24 @@ jobs:
 
       - name: Execute remote deploy.sh
         run: |
-          HOST="${{ secrets.TN_STAGING_HOST#*@ }}"
-          USER="${{ secrets.TN_STAGING_HOST%@* }}"
+          set -euxo pipefail
+
+          # Load the raw secret and split in shell
+          RAW_HOST="${{ secrets.TN_STAGING_HOST }}"
+          USER="${RAW_HOST%@*}"
+          HOST="${RAW_HOST#*@}"
+
           TARGET_DIR=/home/deployment/all-services/all-content-service
           ACTION="${{ github.event.inputs.action }}"
           REF="${{ github.event.inputs.branch }}"
 
-          ssh -i key.pem -oStrictHostKeyChecking=no $USER@"$HOST" <<EOF
+          # SSH in and run the script
+          ssh -i key.pem -oStrictHostKeyChecking=no "$USER@$HOST" <<'EOF'
             set -euo pipefail
-            cd $TARGET_DIR
-            sudo bash deploy.sh "\$PWD" "$REF" "$ACTION"
-              EOF
+            cd /home/deployment/all-services/all-content-service
+            sudo bash deploy.sh "$PWD" "'"$REF"'" "'"$ACTION"'"
+          EOF
+
 
       - name: Verify container status
         run: |
