@@ -98,18 +98,21 @@ jobs:
           rsync -avz -e "ssh -F ~/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
 
       - name: Create and transfer .env file
-        if: ${{ secrets.ENV_FILE_B64 != '' }}
         run: |
           TARGET_DIR="/home/deployment/all-services/all-content-service"
-          if echo "${{ secrets.ENV_FILE_B64 }}" | base64 -d > .env 2>/dev/null; then
-            echo "ENV_FILE_B64 is valid base64, proceeding with .env transfer."
+
+          if [[ -n "${{ secrets.ENV_FILE_B64 }}" ]]; then
+            echo "${{ secrets.ENV_FILE_B64 }}" | base64 -d > .env
+            chmod 600 .env
+            echo "✅ .env file decoded successfully."
+
+            rsync -avz -e "ssh -F ~/.ssh/config" .env target:"$TARGET_DIR/.env"
+
+            echo "🔍 Verifying transferred .env file..."
+            ssh -F ~/.ssh/config target "ls -l $TARGET_DIR/.env && head -n 10 $TARGET_DIR/.env"
           else
-            echo "::error::ENV_FILE_B64 secret is not valid base64 encoded data."
-            exit 1
+            echo "⚠️ ENV_FILE_B64 secret is empty or not set. Skipping .env transfer."
           fi
-          chmod 600 .env
-          rsync -avz -e "ssh -F ~/.ssh/config" .env target:"$TARGET_DIR/.env"
-          ssh -F ~/.ssh/config target "ls -l $TARGET_DIR/.env && cat $TARGET_DIR/.env"
 
       - name: Run remote deploy script
         env:
