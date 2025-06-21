@@ -84,12 +84,16 @@ jobs:
           dos2unix docker-compose.yml
           cat docker-compose.yml
 
-      - name: Prepare .env file
-        if: secrets.ENV_FILE != ''
-        run: |
-          echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
-          chmod 600 .env
-          cat .env
+          - name: Prepare .env file
+            run: |
+              if [ -n "${{ secrets.ENV_FILE }}" ]; then
+                echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
+                chmod 600 .env
+                cat .env
+              else
+                echo "No .env content found in secrets."
+              fi
+
 
       - name: Transfer deploy.sh, docker-compose.yml, and .env to remote server
         run: |
