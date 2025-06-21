@@ -10,11 +10,10 @@ on:
         options: [deploy, rollback]
         default: deploy
       branch:
-        description: 'Branch or tag to use'
-        required: false
+        description: 'Branch or tag'
         default: main
       environment:
-        description: 'Target environment'
+        description: 'Environment'
         required: true
         type: choice
         options: [tn-staging]
@@ -34,23 +33,19 @@ jobs:
 
       - name: Configure SSH and known hosts
         run: |
-          #!/usr/bin/env bash
           set -euxo pipefail
-
-          # Decode and write private key
           mkdir -p "$HOME/.ssh"
+          # private key
           echo "${{ secrets.SSH_KEY }}" | base64 -d > "$HOME/.ssh/id_rsa"
           chmod 600 "$HOME/.ssh/id_rsa"
 
-          # Parse jump and target hosts
+          # parse secrets in shell
           JUMP="${{ secrets.JUMPHOST }}"
           TARGET="${{ secrets.TN_STAGING_HOST }}"
-          JUMP_USER="${JUMP%@*}"
-          JUMP_HOST="${JUMP#*@}"
-          TARGET_USER="${TARGET%@*}"
-          TARGET_HOST="${TARGET#*@}"
+          JUMP_USER="${JUMP%@*}"   JUMP_HOST="${JUMP#*@}"
+          TGT_USER="${TARGET%@*}"  TGT_HOST="${TARGET#*@}"
 
-          # Build a valid SSH config
+          # write config
           cat > "$HOME/.ssh/config" <<EOF
             Host jumphost
               HostName $JUMP_HOST
@@ -59,40 +54,43 @@ jobs:
               StrictHostKeyChecking no
             
             Host target
-              HostName $TARGET_HOST
-              User $TARGET_USER
+              HostName $TGT_HOST
+              User $TGT_USER
               IdentityFile $HOME/.ssh/id_rsa
               ProxyJump jumphost
               StrictHostKeyChecking no
             EOF
           chmod 600 "$HOME/.ssh/config"
 
-          # Populate known_hosts
-          ssh-keyscan -H "$JUMP_HOST"    >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
-          ssh-keyscan -H "$TARGET_HOST"  >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+          # known_hosts
+          ssh-keyscan -H "$JUMP_HOST"  >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+          ssh-keyscan -H "$TGT_HOST"   >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
 
-      - name: Transfer and run deploy.sh
-        env:
-          SSH_CFG: "$HOME/.ssh/config"
-          ACTION: ${{ github.event.inputs.action }}
-          REF:    ${{ github.event.inputs.branch }}
+      - name: Transfer & run deploy.sh
         run: |
           set -euxo pipefail
           TARGET_DIR=/home/deployment/all-services/all-content-service
+          # push scripts
+          rsync -az -e "ssh -F $HOME/.ssh/config" deploy.sh    target:"$TARGET_DIR/deploy.sh"
+          rsync -az -e "ssh -F $HOME/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
+          # optional .env in repo root
+          if [[ -f .env ]]; then
+            rsync -az -e "ssh -F $HOME/.ssh/config" .env target:"$TARGET_DIR/.env"
+          fi
 
-          # Transfer files
-          rsync -az -e "ssh -F $SSH_CFG" deploy.sh    target:"$TARGET_DIR/deploy.sh"
-          rsync -az -e "ssh -F $SSH_CFG" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
-
-          # Execute remotely
-          ssh -F "$SSH_CFG" target <<'ENDSSH'
+          # execute
+          ssh -F "$HOME/.ssh/config" target <<'EOF'
             set -euo pipefail
             cd /home/deployment/all-services/all-content-service
+            ACTION="${{ github.event.inputs.action }}"
+            REF="${{ github.event.inputs.branch }}"
             sudo bash deploy.sh "$PWD" "$REF" "$ACTION"
-          ENDSSH
+          EOF
 
       - name: Verify container is up
-        run: ssh -F "$HOME/.ssh/config" target "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
+        run: |
+          ssh -F "$HOME/.ssh/config" target \
+            "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
 
       - name: Slack Notification
         if: always()
@@ -100,7 +98,7 @@ jobs:
         with:
           payload: |
             {
-              "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: *${{ github.event.inputs.action }}* of *all-content-service* (_ref=${{ github.event.inputs.branch }})* — *${{ job.status }}*"
+              "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: *${{ github.event.inputs.action }}* (_ref=${{ github.event.inputs.branch }}) — *${{ job.status }}*"
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
