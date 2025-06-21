@@ -336,8 +336,14 @@ jobs:
         if: always()
         run: |
           ENVIRONMENT="${{ steps.vars.outputs.environment }}"
-          STATUS="${{ job.status == 'success' ? 'Succeeded' : 'Failed' }}"
-          EMOJI="${{ job.status == 'success' ? ':white_check_mark:' : ':x:' }}"
+          STATUS="Failed"
+          EMOJI=":x:"
+
+          if [ "${{ job.status }}" = "success" ]; then
+            STATUS="Succeeded"
+            EMOJI=":white_check_mark:"
+          fi
+
           curl -X POST -H 'Content-type: application/json' \
             --data "{\"text\":\"$EMOJI Deployment $STATUS for all-content-service\n*Environment:* $ENVIRONMENT\n*Action:* ${{ github.event.inputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
             "${{ secrets.SLACK_WEBHOOK_URL }}"
