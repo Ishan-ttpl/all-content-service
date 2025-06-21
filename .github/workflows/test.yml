@@ -1,12 +1,6 @@
 name: Deploy or Rollback All-Content-Service
 
 on:
-  push:
-    tags:
-      - 'deploy-test-rig-dev-*'
-      - 'deploy-test-rig-prod-*'
-      - 'deploy-tn-dev-*'
-      - 'deploy-tn-staging-*'
   workflow_dispatch:
     inputs:
       action:
@@ -16,7 +10,7 @@ on:
         options: [deploy, rollback]
         default: deploy
       branch:
-        description: 'Branch or tag to use'
+        description: 'Branch or tag'
         required: false
         default: main
       environment:
@@ -30,90 +24,62 @@ jobs:
   deploy:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
-      - name: Install SSH & rsync
+      - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y openssh-client rsync dos2unix
 
-      - name: Configure SSH and known hosts
-        env:
-          SSH_KEY: ${{ secrets.SSH_KEY }}
-          JUMPHOST: ${{ secrets.JUMPHOST }}
-          TN_STAGING_HOST: ${{ secrets.TN_STAGING_HOST }}
+      - name: Write SSH key
         run: |
-          set -euxo pipefail
+          echo "${{ secrets.SSH_KEY }}" | base64 -d > key.pem
+          chmod 600 key.pem
 
-          mkdir -p "$HOME/.ssh"
-          echo "$SSH_KEY" | base64 -d > "$HOME/.ssh/id_rsa"
-          chmod 600 "$HOME/.ssh/id_rsa"
-
-          # parse user@host
-          JUMP_USER="${JUMPHOST%@*}"
-          JUMP_HOST="${JUMPHOST#*@}"
-          TGT_USER="${TN_STAGING_HOST%@*}"
-          TGT_HOST="${TN_STAGING_HOST#*@}"
-
-          # write SSH config
-          cat > "$HOME/.ssh/config" <<EOF
-          Host jumphost
-            HostName $JUMP_HOST
-            User $JUMP_USER
-            IdentityFile $HOME/.ssh/id_rsa
-            StrictHostKeyChecking no
-          
-          Host target
-            HostName $TGT_HOST
-            User $TGT_USER
-            IdentityFile $HOME/.ssh/id_rsa
-            ProxyJump jumphost
-            StrictHostKeyChecking no
-          EOF
-          chmod 600 "$HOME/.ssh/config"
-
-          # known hosts
-          ssh-keyscan -H "$JUMP_HOST"  >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
-          ssh-keyscan -H "$TGT_HOST"   >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
-
-      - name: Transfer & run deploy.sh
+      - name: Transfer deploy.sh and compose
         run: |
-          set -euxo pipefail
+          TARGET="deploy@${{ secrets.TN_STAGING_HOST#*@ }}"
+          HOST="${{ secrets.TN_STAGING_HOST#*@ }}"
+          USER="${{ secrets.TN_STAGING_HOST%@* }}"
+
           TARGET_DIR=/home/deployment/all-services/all-content-service
+          RSYNC_OPTS="-e 'ssh -i key.pem -oStrictHostKeyChecking=no'"
 
-          # push scripts
-          rsync -az -e "ssh -F $HOME/.ssh/config" deploy.sh    target:"$TARGET_DIR/deploy.sh"
-          rsync -az -e "ssh -F $HOME/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
-
-          # optional .env in repo root
+          rsync -az $RSYNC_OPTS deploy.sh    $USER@"$HOST":"$TARGET_DIR"/deploy.sh
+          rsync -az $RSYNC_OPTS docker-compose.yml $USER@"$HOST":"$TARGET_DIR"/docker-compose.yml
           if [[ -f .env ]]; then
-            rsync -az -e "ssh -F $HOME/.ssh/config" .env target:"$TARGET_DIR/.env"
+            rsync -az $RSYNC_OPTS .env $USER@"$HOST":"$TARGET_DIR"/.env
           fi
 
-          # execute remotely
-          ssh -F "$HOME/.ssh/config" target <<'EOF'
-            set -euo pipefail
-            cd /home/deployment/all-services/all-content-service
-            ACTION="deploy"
-            REF="lais-v2.0"
-            sudo bash deploy.sh "$PWD" "$REF" "$ACTION"
-          EOF
-
-      - name: Verify container is up
+      - name: Execute remote deploy.sh
         run: |
-          ssh -F "$HOME/.ssh/config" target \
+          HOST="${{ secrets.TN_STAGING_HOST#*@ }}"
+          USER="${{ secrets.TN_STAGING_HOST%@* }}"
+          TARGET_DIR=/home/deployment/all-services/all-content-service
+          ACTION="${{ github.event.inputs.action }}"
+          REF="${{ github.event.inputs.branch }}"
+
+          ssh -i key.pem -oStrictHostKeyChecking=no $USER@"$HOST" <<EOF
+            set -euo pipefail
+            cd $TARGET_DIR
+            sudo bash deploy.sh "\$PWD" "$REF" "$ACTION"
+              EOF
+
+      - name: Verify container status
+        run: |
+          HOST="${{ secrets.TN_STAGING_HOST#*@ }}"
+          USER="${{ secrets.TN_STAGING_HOST%@* }}"
+          ssh -i key.pem -oStrictHostKeyChecking=no $USER@"$HOST" \
             "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
 
-      - name: Slack Notification
+      - name: Slack notification
         if: always()
         uses: slackapi/slack-github-action@v1.24.0
         with:
-          payload: |
+          payload: >
             {
-              "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: *Deployment ${{
-                github.event.inputs.action
-              }}* on *${{ github.event.inputs.branch }}* — *${{ job.status }}*"
+              "text": ":${{ job.status == 'success' && 'white_check_mark' || 'x' }}: *${{ github.event.inputs.action }}* on *${{ github.event.inputs.branch }}* — *${{ job.status }}*"
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
