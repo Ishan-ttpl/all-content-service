@@ -39,17 +39,22 @@ jobs:
 
       - name: Transfer deploy.sh and compose
         run: |
-          TARGET="deploy@${{ secrets.TN_STAGING_HOST#*@ }}"
-          HOST="${{ secrets.TN_STAGING_HOST#*@ }}"
-          USER="${{ secrets.TN_STAGING_HOST%@* }}"
-
+          set -euxo pipefail
+          # Pull the raw secret into a shell var
+          RAW_HOST="${{ secrets.TN_STAGING_HOST }}"
+          # Now do the user/host split in shell
+          USER="${RAW_HOST%@*}"
+          HOST="${RAW_HOST#*@}"
           TARGET_DIR=/home/deployment/all-services/all-content-service
-          RSYNC_OPTS="-e 'ssh -i key.pem -oStrictHostKeyChecking=no'"
 
-          rsync -az $RSYNC_OPTS deploy.sh    $USER@"$HOST":"$TARGET_DIR"/deploy.sh
-          rsync -az $RSYNC_OPTS docker-compose.yml $USER@"$HOST":"$TARGET_DIR"/docker-compose.yml
+          # rsync using the key and disabling host checks
+          RSYNC_SSH="ssh -i key.pem -oStrictHostKeyChecking=no"
+
+          rsync -az -e "$RSYNC_SSH" deploy.sh    $USER@"$HOST":"$TARGET_DIR"/deploy.sh
+          rsync -az -e "$RSYNC_SSH" docker-compose.yml $USER@"$HOST":"$TARGET_DIR"/docker-compose.yml
+
           if [[ -f .env ]]; then
-            rsync -az $RSYNC_OPTS .env $USER@"$HOST":"$TARGET_DIR"/.env
+            rsync -az -e "$RSYNC_SSH" .env $USER@"$HOST":"$TARGET_DIR"/.env
           fi
 
       - name: Execute remote deploy.sh
