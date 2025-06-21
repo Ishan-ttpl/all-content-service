@@ -22,86 +22,149 @@ on:
         type: choice
         options: [test-rig-dev, test-rig-prod, tn-dev, tn-staging]
       branch:
-        description: 'Branch to deploy (deploy only)'
+        description: 'Branch to deploy (for deploy only)'
         required: false
         default: 'main'
         type: string
       rollback_tag:
-        description: 'Tag to rollback to (rollback only)'
+        description: 'Tag to rollback to (for rollback only)'
         required: false
         type: string
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-22.04
-    environment: ${{ github.event.inputs.environment }}
+    environment: ${{ github.event.inputs.environment || 'tn-staging' }}
+
     steps:
-
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
+          repository: Ishan-ttpl/all-content-service
 
-      - name: Install rsync and SSH client
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/all-content-service:latest .
+          docker push ${{ secrets.DOCKER_USERNAME }}/all-content-service:latest
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y openssh-client rsync dos2unix
 
-      - name: Prepare SSH key
+      - name: Setup SSH Key
         run: |
-          echo "${{ secrets.SSH_KEY }}" > key.pem
+          echo "${{ secrets.SSH_KEY }}" | base64 -d > key.pem
           chmod 600 key.pem
 
-      - name: Write SSH config for jumphost + target
+      - name: Write SSH config for jumphost and target
         run: |
           JUMP="${{ secrets.JUMPHOST }}"
           TARGET="${{ secrets.TN_STAGING_HOST }}"
           mkdir -p ~/.ssh
-          printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  StrictHostKeyChecking no\n" \
+          printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" \
             "${JUMP#*@}" "${JUMP%@*}" "$PWD" > ~/.ssh/config
-          printf "Host target\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n" \
+          printf "Host target\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" \
             "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> ~/.ssh/config
           chmod 600 ~/.ssh/config
 
       - name: Add known hosts
         run: |
-          JUMP="${{ secrets.JUMPHOST }}"
-          TARGET="${{ secrets.TN_STAGING_HOST }}"
-          ssh-keyscan "${JUMP#*@}" >> ~/.ssh/known_hosts || true
-          ssh-keyscan "${TARGET#*@}" >> ~/.ssh/known_hosts || true
+          ssh-keyscan "${{ secrets.JUMPHOST#*@ }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan "${{ secrets.TN_STAGING_HOST#*@ }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Transfer deploy.sh to target
+      - name: Prepare deploy.sh
         run: |
-          TARGET_DIR="/home/deployment/all-services/all-content-service"
           mkdir -p scripts/
-          echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" | base64 --decode > scripts/deploy.sh
+          echo "${{ secrets.DEPLOY_SCRIPT_CONTENT }}" | base64 -d > scripts/deploy.sh
           chmod +x scripts/deploy.sh
           dos2unix scripts/deploy.sh
 
-          rsync -avz \
-            -e "ssh -F ~/.ssh/config" \
-            scripts/deploy.sh \
-            target:"$TARGET_DIR/scripts/"
+      - name: Prepare docker-compose.yml
+        run: |
+          echo "${{ secrets.DOCKER_COMPOSE_CONTENT_B64 }}" | base64 -d > docker-compose.yml
+          dos2unix docker-compose.yml
+          cat docker-compose.yml
 
-      - name: Execute remote deploy.sh
+      - name: Transfer deploy.sh and docker-compose.yml to remote server
+        run: |
+          TARGET_DIR="/home/deployment/all-services/all-content-service"
+          rsync -avz -e "ssh -F ~/.ssh/config" scripts/deploy.sh target:"$TARGET_DIR/scripts/"
+          rsync -avz -e "ssh -F ~/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
+
+      - name: Create and transfer .env file
+        if: ${{ secrets.ENV_FILE_B64 != '' }}
+        run: |
+          TARGET_DIR="/home/deployment/all-services/all-content-service"
+          if echo "${{ secrets.ENV_FILE_B64 }}" | base64 -d > .env 2>/dev/null; then
+            echo "ENV_FILE_B64 is valid base64, proceeding with .env transfer."
+          else
+            echo "::error::ENV_FILE_B64 secret is not valid base64 encoded data."
+            exit 1
+          fi
+          chmod 600 .env
+          rsync -avz -e "ssh -F ~/.ssh/config" .env target:"$TARGET_DIR/.env"
+          ssh -F ~/.ssh/config target "ls -l $TARGET_DIR/.env && cat $TARGET_DIR/.env"
+
+      - name: Run remote deploy script
         env:
           DOCKER_COMPOSE_CONTENT_B64: ${{ secrets.DOCKER_COMPOSE_CONTENT_B64 }}
-          ENV_FILE_B64:             ${{ secrets.ENV_FILE_B64 || '' }}
+          ENV_FILE_B64: ${{ secrets.ENV_FILE_B64 || '' }}
         run: |
           if [[ "${{ github.event.inputs.action }}" == "rollback" ]]; then
             REF="${{ github.event.inputs.rollback_tag }}"
           else
             REF="${{ github.event.inputs.branch }}"
           fi
-
           if [[ -z "$REF" ]]; then
-            echo "::error::No branch or rollback_tag provided"; exit 1
+            echo "::error::No branch or rollback_tag provided"
+            exit 1
           fi
-
-          ssh -F ~/.ssh/config target << EOF
+          ssh -F ~/.ssh/config target <<EOF
             set -e
-            mkdir -p /home/deployment/all-services/all-content-service/scripts/
             cd /home/deployment/all-services/all-content-service
-            export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}'
-            export ENV_FILE_B64='${ENV_FILE_B64}'
-            echo "Running deployment script..."
-            sudo bash scripts/deploy.sh "$PWD" "$REF" "${{ github.event.inputs.action }}"
-            EOF
+            echo '${{ secrets.DOCKER_PASSWORD }}' | docker login -u '${{ secrets.DOCKER_USERNAME }}' --password-stdin
+            echo "🔧 Running deploy script for $REF..."
+            sudo bash scripts/deploy.sh "\$PWD" "$REF" "${{ github.event.inputs.action }}"
+           EOF
+
+      - name: Verify container logs
+        run: |
+          ssh -F ~/.ssh/config target "docker logs content-service || echo 'Failed to get container logs'"
+
+      - name: Notify Slack — Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "✅ Deployment of *All-Content-Service* to *${{ github.event.inputs.environment }}* completed successfully.\nRef: `${{ github.event.inputs.branch || github.event.inputs.rollback_tag }}`"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack — Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "❌ Deployment of *All-Content-Service* to *${{ github.event.inputs.environment }}* failed.\nRef: `${{ github.event.inputs.branch || github.event.inputs.rollback_tag }}`\n<https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Cleanup temporary files
+        if: always()
+        run: |
+          rm -f key.pem .env scripts/deploy.sh docker-compose.yml
