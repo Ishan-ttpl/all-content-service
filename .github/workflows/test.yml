@@ -57,19 +57,17 @@ jobs:
         run: |
           JUMP="${{ secrets.JUMPHOST }}"
           TARGET="${{ secrets.TN_STAGING_HOST }}"
-          mkdir -p ~/.ssh
+          mkdir -p /home/runner/.ssh
           printf "Host jumphost\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" \
-            "${JUMP#*@}" "${JUMP%@*}" "$PWD" > ~/.ssh/config
+            "${JUMP#*@}" "${JUMP%@*}" "$PWD" > /home/runner/.ssh/config
           printf "Host target\n  HostName %s\n  User %s\n  IdentityFile %s/key.pem\n  ProxyJump jumphost\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  ServerAliveInterval 180\n  ServerAliveCountMax 15\n" \
-            "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> ~/.ssh/config
-          chmod 600 ~/.ssh/config
+            "${TARGET#*@}" "${TARGET%@*}" "$PWD" >> /home/runner/.ssh/config
+          chmod 600 /home/runner/.ssh/config
 
       - name: Add known hosts
         run: |
-          JUMP_HOST="${{ secrets.JUMPHOST }}"
-          TARGET_HOST="${{ secrets.TN_STAGING_HOST }}"
-          ssh-keyscan "${JUMP_HOST#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
-          ssh-keyscan "${TARGET_HOST#*@}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H "${{ secrets.JUMPHOST#*@ }}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H "${{ secrets.TN_STAGING_HOST#*@ }}" >> /home/runner/.ssh/known_hosts 2>/dev/null || true
 
       - name: Prepare deploy.sh
         run: |
@@ -84,7 +82,7 @@ jobs:
           dos2unix docker-compose.yml
           cat docker-compose.yml
 
-      - name: Prepare .env file
+      - name: Prepare .env file (if present)
         run: |
           if [ -n "${{ secrets.ENV_FILE }}" ]; then
             echo "${{ secrets.ENV_FILE }}" | base64 -d > .env
@@ -94,22 +92,23 @@ jobs:
             echo "No .env content found in secrets."
           fi
 
-      - name: Transfer deploy.sh, docker-compose.yml, and .env to remote server
+      - name: Transfer files to remote server
         run: |
           TARGET_DIR="/home/deployment/all-services/all-content-service"
-          ssh -F ~/.ssh/config target "mkdir -p \"$TARGET_DIR/scripts\""
-          rsync -avz -e "ssh -F ~/.ssh/config" scripts/deploy.sh target:"$TARGET_DIR/scripts/deploy.sh"
-          rsync -avz -e "ssh -F ~/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
+          ssh -F /home/runner/.ssh/config target "mkdir -p \"$TARGET_DIR/scripts\""
+          rsync -avz -e "ssh -F /home/runner/.ssh/config" scripts/deploy.sh target:"$TARGET_DIR/scripts/deploy.sh"
+          rsync -avz -e "ssh -F /home/runner/.ssh/config" docker-compose.yml target:"$TARGET_DIR/docker-compose.yml"
           if [ -f .env ]; then
-            rsync -avz -e "ssh -F ~/.ssh/config" .env target:"$TARGET_DIR/.env"
+            rsync -avz -e "ssh -F /home/runner/.ssh/config" .env target:"$TARGET_DIR/.env"
+            ssh -F /home/runner/.ssh/config target "ls -l $TARGET_DIR/.env && cat $TARGET_DIR/.env"
           else
-            ssh -F ~/.ssh/config target "rm -f $TARGET_DIR/.env || true"
+            ssh -F /home/runner/.ssh/config target "rm -f $TARGET_DIR/.env || true"
           fi
 
       - name: Run remote deploy script
         env:
           DOCKER_COMPOSE_CONTENT_B64: ${{ secrets.DOCKER_COMPOSE_CONTENT }}
-          ENV_FILE_B64: ${{ secrets.ENV_FILE }}
+          ENV_FILE_B64: ${{ secrets.ENV_FILE || '' }}
         run: |
           if [[ "${{ github.event.inputs.action }}" == "rollback" ]]; then
             REF="${{ github.event.inputs.rollback_tag }}"
@@ -122,7 +121,7 @@ jobs:
             exit 1
           fi
 
-          ssh -F ~/.ssh/config target <<EOF
+          ssh -F /home/runner/.ssh/config target <<EOF
             set -e
             cd /home/deployment/all-services/all-content-service
             export DOCKER_COMPOSE_CONTENT_B64='${DOCKER_COMPOSE_CONTENT_B64}'
@@ -133,7 +132,7 @@ jobs:
 
       - name: Verify container logs
         run: |
-          ssh -F ~/.ssh/config target "docker logs content-service || echo 'Failed to get container logs'"
+          ssh -F /home/runner/.ssh/config target "docker logs content-service || echo 'Failed to get container logs'"
 
       - name: Notify Slack — Success
         if: success()
@@ -141,7 +140,7 @@ jobs:
         with:
           payload: |
             {
-              "text": "✅ Deployment of *All-Content-Service* to *${{ github.event.inputs.environment }}* completed successfully.\nRef: `${{ github.event.inputs.branch || github.event.inputs.rollback_tag }}`"
+              "text": "✅ Deployment of *All-Content-Service* to *${{ github.event.inputs.environment }}* succeeded.\nRef: `${{ github.event.inputs.branch || github.event.inputs.rollback_tag }}`"
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -160,5 +159,4 @@ jobs:
       - name: Cleanup temporary files
         if: always()
         run: |
-          rm -f key.pem .env docker-compose.yml
-          rm -rf scripts/
+          rm -f key.pem .env docker-compose.yml scripts/deploy.sh
