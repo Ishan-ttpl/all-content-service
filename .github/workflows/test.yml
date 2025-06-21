@@ -1,26 +1,29 @@
-name: Deploy or Rollback All-Content-Service
+name: Deploy All-Content-Service to Staging
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Action to perform (deploy or rollback)'
+        description: "Action (deploy/rollback)"
         required: true
-        default: 'deploy'
+        default: "deploy"
       branch:
-        description: 'Branch to deploy from'
+        description: "Branch to deploy"
         required: true
-        default: 'main'
+        default: "main"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    env:
+      RAW_HOST: ${{ secrets.TN_STAGING_HOST }}
 
-      - name: Set up SSH config
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH config
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
@@ -33,29 +36,35 @@ jobs:
             IdentityFile ~/.ssh/id_rsa
             ProxyJump sudeepr@4.240.49.92
             StrictHostKeyChecking no
+            UserKnownHostsFile=/dev/null
           EOF
           chmod 600 ~/.ssh/config
 
-      - name: Deploy to staging server
+      - name: Transfer files to staging server
         run: |
           set -euxo pipefail
-          
-          TARGET_DIR=/home/deployment/all-services/all-content-service
-          ACTION="${{ github.event.inputs.action }}"
-          REF="${{ github.event.inputs.branch }}"
 
-          rsync -az deploy.sh staging:"$TARGET_DIR"/deploy.sh
-          rsync -az docker-compose.yml staging:"$TARGET_DIR"/docker-compose.yml
+          # Validate env
+          : "${RAW_HOST:?Environment variable RAW_HOST (from secrets.TN_STAGING_HOST) is required}"
+
+          # Split into USER and HOST
+          USER="${RAW_HOST%@*}"
+          HOST="${RAW_HOST#*@}"
+          TARGET_DIR=/home/deployment/all-services/all-content-service
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -J sudeepr@4.240.49.92 -i ~/.ssh/id_rsa"
+
+          # Send files
+          rsync -az -e "ssh $SSH_OPTS" deploy.sh "$USER@$HOST:$TARGET_DIR/deploy.sh"
+          rsync -az -e "ssh $SSH_OPTS" docker-compose.yml "$USER@$HOST:$TARGET_DIR/docker-compose.yml"
 
           if [[ -f .env ]]; then
-            rsync -az .env staging:"$TARGET_DIR"/.env
+            rsync -az -e "ssh $SSH_OPTS" .env "$USER@$HOST:$TARGET_DIR/.env"
           fi
 
-          ssh staging <<EOF
-            set -euo pipefail
-            cd "$TARGET_DIR"
-            sudo bash deploy.sh "\$PWD" "$REF" "$ACTION"
-          EOF
+      - name: Verify container status
+        run: |
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -J sudeepr@4.240.49.92 -i ~/.ssh/id_rsa ${{ secrets.TN_STAGING_HOST }} \
+            "docker ps --filter name=content-service --format '{{.Status}}' | grep -q Up"
 
       - name: Slack notification
         if: always()
