@@ -338,8 +338,14 @@ jobs:
 
       - name: Notify Slack
         if: always()
+        env:
+          ENVIRONMENT: ${{ steps.vars.outputs.environment }}
+          ACTION: ${{ github.event.inputs.action }}
+          BRANCH: ${{ github.event.inputs.branch }}
+          ROLLBACK_TAG: ${{ github.event.inputs.rollback_tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          ENVIRONMENT="${{ steps.vars.outputs.environment }}"
           STATUS="Failed"
           EMOJI=":x:"
 
@@ -348,9 +354,62 @@ jobs:
             EMOJI=":white_check_mark:"
           fi
 
+          # Fetch logs URL using GitHub CLI (if installed)
+          if command -v gh &> /dev/null; then
+            LOGS_URL=$(gh run view ${{ github.run_id }} --json logsUrl --jq '.logsUrl')
+          else
+            # Fallback: Use GitHub API if CLI isn't available
+            LOGS_URL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" | \
+              jq -r '.logs_url')
+          fi
+
+          # Default to RUN_URL if logs URL can't be fetched
+          LOGS_URL=${LOGS_URL:-$RUN_URL}
+
           curl -X POST -H 'Content-type: application/json' \
-            --data "{\"text\":\"$EMOJI Deployment $STATUS for all-content-service\n*Environment:* $ENVIRONMENT\n*Action:* ${{ github.event.inputs.action }}\n*Ref:* ${{ github.ref_name }}\n*Run:* ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
-            "${{ secrets.SLACK_WEBHOOK_URL }}"
+            --data "{
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"$EMOJI Deployment $STATUS for all-content-service\"
+                  }
+                },
+                {
+                  \"type\": \"context\",
+                  \"elements\": [
+                    {
+                      \"type\": \"mrkdwn\",
+                      \"text\": \"*Environment:* $ENVIRONMENT • *Action:* $ACTION • *Branch/Tag:* $BRANCH/$ROLLBACK_TAG\"
+                    }
+                  ]
+                },
+                {
+                  \"type\": \"actions\",
+                  \"elements\": [
+                    {
+                      \"type\": \"button\",
+                      \"text\": {
+                        \"type\": \"plain_text\",
+                        \"text\": \"View Run\"
+                      },
+                      \"url\": \"$RUN_URL\"
+                    },
+                    {
+                      \"type\": \"button\",
+                      \"text\": {
+                        \"type\": \"plain_text\",
+                        \"text\": \"View Logs\"
+                      },
+                      \"url\": \"$LOGS_URL\"
+                    }
+                  ]
+                }
+              ]
+            }" \
+            "$SLACK_WEBHOOK_URL"
 
       - name: Cleanup temporary files
         if: always()
