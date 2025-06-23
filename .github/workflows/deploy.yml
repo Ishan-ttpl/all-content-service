@@ -41,6 +41,14 @@ jobs:
     environment: ${{ github.event.inputs.environment || 'tn-staging' }}
 
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Determine environment and action
         id: vars
         run: |
